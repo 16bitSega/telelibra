@@ -27,18 +27,36 @@ class Settings:
         self.obsidian_vault_path: Path = Path(os.getenv("OBSIDIAN_VAULT_PATH", "./vault")).resolve()
         self.cookies_path: Path = Path(os.getenv("COOKIES_PATH", "cookies.json")).resolve()
 
-        # AI Engine Settings
+        # AI Engine Provider Settings
+        # Providers: 'llamacpp' (Muse-Glimmer-30B), 'ollama', 'openai', 'vllm'
+        self.llm_provider: str = os.getenv("LLM_PROVIDER", "llamacpp").lower()
         self.use_openai: bool = os.getenv("USE_OPENAI", "false").lower() in ("true", "1", "yes")
         self.openai_api_key: str = os.getenv("OPENAI_API_KEY", "")
         self.openai_model: str = os.getenv("OPENAI_MODEL", "gpt-4o")
         self.ollama_base_url: str = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
         self.ollama_model: str = os.getenv("OLLAMA_MODEL", "llama3:8b")
 
+        # Muse-Glimmer-30B / llama.cpp Server Settings
+        self.llamacpp_base_url: str = os.getenv("LLAMACPP_BASE_URL", "http://localhost:8080/v1")
+        self.llamacpp_model_name: str = os.getenv("LLAMACPP_MODEL_NAME", "Muse-Glimmer-30B")
+        self.llamacpp_model_path: Path = Path(
+            os.getenv("LLAMACPP_MODEL_PATH", "llama/runtime/models/Muse-Glimmer-30B/muse-glimmer-30B-kquant-17gb.gguf")
+        )
+        self.llamacpp_mmproj_path: Path = Path(
+            os.getenv("LLAMACPP_MMPROJ_PATH", "llama/runtime/models/Muse-Glimmer-30B/mmproj-kquant.gguf")
+        )
+        self.llamacpp_draft_path: Path = Path(
+            os.getenv("LLAMACPP_DRAFT_PATH", "llama/runtime/models/Muse-Glimmer-30B/dflash-kquant.gguf")
+        )
+        self.llamacpp_context_size: int = int(os.getenv("LLAMACPP_CONTEXT_SIZE", "32768"))
+        self.llamacpp_slots: int = int(os.getenv("LLAMACPP_SLOTS", "1"))
+        self.reasoning_effort: str = os.getenv("REASONING_EFFORT", "high").lower()  # low, medium, high, xhigh
+
         # Vision Model Settings (Self-Hosted / Cloud)
         self.vision_enabled: bool = os.getenv("VISION_ENABLED", "true").lower() in ("true", "1", "yes")
-        self.vision_provider: str = os.getenv("VISION_PROVIDER", "ollama").lower()  # 'ollama', 'vllm', 'openai'
-        self.vision_model: str = os.getenv("VISION_MODEL", "llama3.2-vision")
-        self.vision_base_url: str = os.getenv("VISION_BASE_URL", "http://localhost:11434")
+        self.vision_provider: str = os.getenv("VISION_PROVIDER", "llamacpp").lower()  # 'llamacpp', 'ollama', 'vllm', 'openai'
+        self.vision_model: str = os.getenv("VISION_MODEL", "Muse-Glimmer-30B")
+        self.vision_base_url: str = os.getenv("VISION_BASE_URL", "http://localhost:8080/v1")
         self.tile_height: int = int(os.getenv("TILE_HEIGHT", "1568"))  # PixelRAG optimal tile height
         self.attachments_path: Path = (self.obsidian_vault_path / "attachments").resolve()
 

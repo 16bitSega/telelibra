@@ -1,5 +1,5 @@
 """
-Unit tests for ai_engine.py, visual triage routing, and NotebookLM Markdown generation.
+Unit tests for ai_engine.py, Muse-Glimmer-30B triage routing, and NotebookLM Markdown generation.
 """
 
 from pathlib import Path
@@ -71,12 +71,43 @@ def test_failed_scrape_guardrail():
     assert "login wall" in result.summary.lower()
 
 
+@patch.object(AILibrarian, "_call_llamacpp")
+def test_ai_triage_with_muse_glimmer_30b(mock_llamacpp):
+    mock_llamacpp.return_value = '{"title": "Distributed Multi-Agent Architecture", "category": "agents", "type": "knowledge", "summary": "Muse-Glimmer-30B analyzed the visual diagram demonstrating multi-agent routing with checkpointing.", "insights": ["Visual flowchart reveals hierarchical orchestrator", "Worker pool scales dynamically"], "tags": ["agents", "muse_glimmer", "visual_rag"], "code_snippets": []}'
+
+    tile = VisualTile(path=Path("/tmp/tile_00.jpg"), index=0, width=1280, height=800)
+    librarian = AILibrarian(
+        llm_provider="llamacpp",
+        llamacpp_model_name="Muse-Glimmer-30B",
+        reasoning_effort="high",
+    )
+
+    doc = ScrapedContent(
+        url="https://x.com/ai_research/status/999888777",
+        title="Multi-Agent System",
+        text="Architecture blueprint:",
+        source_type="x",
+        visual_tiles=[tile],
+    )
+
+    result = librarian.process_content(doc)
+    assert result.category == "agents"
+    assert "Distributed Multi-Agent Architecture" in result.title
+    assert len(result.visual_tiles) == 1
+    mock_llamacpp.assert_called_once()
+
+
 @patch.object(AILibrarian, "_call_ollama_vision")
 def test_ai_triage_with_ollama_vision(mock_vision):
     mock_vision.return_value = '{"title": "Autonomous Agent Blueprint", "category": "agents", "type": "knowledge", "summary": "Visual diagram shows an agent loop with tool-use reflection.", "insights": ["Visual flowchart shows critique loop", "State manager handles checkpointing"], "tags": ["agents", "visual_rag", "autonomy"], "code_snippets": []}'
 
     tile = VisualTile(path=Path("/tmp/tile_00.jpg"), index=0, width=1280, height=800)
-    librarian = AILibrarian(vision_enabled=True, vision_provider="ollama", vision_model="llama3.2-vision")
+    librarian = AILibrarian(
+        llm_provider="ollama",
+        vision_enabled=True,
+        vision_provider="ollama",
+        vision_model="llama3.2-vision",
+    )
 
     doc = ScrapedContent(
         url="https://x.com/ai_research/status/111222333",

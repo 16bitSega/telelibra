@@ -1,6 +1,6 @@
 """
-AI Librarian Engine for Librarian AI with Multimodal Vision Model Support.
-Supports Ollama vision (llama3.2-vision, qwen2.5-vl), local vLLM/SGLang servers, and OpenAI GPT-4o.
+AI Librarian Engine for Librarian AI with Muse-Glimmer-30B & Multimodal Vision Model Support.
+Supports Muse-Glimmer-30B (via llama.cpp Metal server), Ollama vision, local vLLM, and OpenAI.
 Triages into 20-folder taxonomy, extracts visual diagrams/tables, and produces NotebookLM Markdown.
 """
 
@@ -75,12 +75,10 @@ class TriageResult:
                 snippets_list.append(f"```\n{snippet.strip()}\n```")
             code_md = "\n\n## Code Snippets\n" + "\n\n".join(snippets_list)
 
-        # Embedded Visual Screenshots
         visual_md = ""
         if self.visual_tiles:
             images_list = []
             for tile in self.visual_tiles:
-                # Relative link from vault folder to attachments
                 rel_path = f"{relative_attachments_prefix}/{tile.path.name}"
                 images_list.append(f"![Visual Snapshot {tile.index + 1}]({rel_path})")
             visual_md = "\n\n## Visual Snapshots\n" + "\n\n".join(images_list)
@@ -111,16 +109,25 @@ type: {self.item_type}
 
 
 class AILibrarian:
-    """Multimodal Triage Engine supporting Self-Hosted Vision Models (Ollama, vLLM) & OpenAI."""
+    """
+    Multimodal Triage Engine supporting Muse-Glimmer-30B (llama.cpp Metal),
+    Ollama, local vLLM, and OpenAI GPT-4o.
+    """
 
     def __init__(self, **kwargs: Any) -> None:
+        self.llm_provider: str = kwargs.get("llm_provider", settings.llm_provider)
         self.use_openai: bool = kwargs.get("use_openai", settings.use_openai)
         self.openai_key: str = kwargs.get("openai_api_key", settings.openai_api_key)
         self.openai_model: str = kwargs.get("openai_model", settings.openai_model)
         self.ollama_url: str = kwargs.get("ollama_base_url", settings.ollama_base_url)
         self.ollama_model: str = kwargs.get("ollama_model", settings.ollama_model)
 
-        # Vision model properties
+        # Muse-Glimmer-30B / llama.cpp settings
+        self.llamacpp_base_url: str = kwargs.get("llamacpp_base_url", settings.llamacpp_base_url)
+        self.llamacpp_model_name: str = kwargs.get("llamacpp_model_name", settings.llamacpp_model_name)
+        self.reasoning_effort: str = kwargs.get("reasoning_effort", settings.reasoning_effort)
+
+        # Vision model settings
         self.vision_enabled: bool = kwargs.get("vision_enabled", settings.vision_enabled)
         self.vision_provider: str = kwargs.get("vision_provider", settings.vision_provider)
         self.vision_model: str = kwargs.get("vision_model", settings.vision_model)
@@ -138,11 +145,11 @@ class AILibrarian:
             return None
 
     def _build_system_prompt(self) -> str:
-        """Constructs system prompt embedding the exact 20-folder taxonomy guide."""
+        """Constructs system prompt embedding the exact 20-folder taxonomy guide and reasoning level."""
         taxonomy_lines = [f"- **{folder}**: {desc}" for folder, desc in TAXONOMY_GUIDE.items()]
         taxonomy_block = "\n".join(taxonomy_lines)
 
-        return f"""You are the AI Librarian for a Personal Intelligence ETL pipeline.
+        return f"""You are the AI Librarian for a Personal Intelligence ETL pipeline, powered by Muse-Glimmer-30B with high-precision reasoning (Reasoning Effort: {self.reasoning_effort.upper()}).
 Your job is to analyze web content and visual document screenshots, triage into either "Job Opportunity" or "Knowledge", categorize into exactly ONE of the 20 taxonomy folders, and produce a structured analysis.
 
 ### FOLDER TAXONOMY (Choose EXACTLY ONE):
@@ -169,6 +176,46 @@ Your job is to analyze web content and visual document screenshots, triage into 
 """
 
     @retry(max_retries=2, backoff=2.0, exceptions=(httpx.HTTPError, OSError))
+    def _call_llamacpp(
+        self,
+        prompt: str,
+        system_prompt: str,
+        tiles: List[VisualTile],
+        **kwargs: Any,
+    ) -> str:
+        """Call local llama.cpp server hosting Muse-Glimmer-30B with mmproj vision projector."""
+        url = f"{self.llamacpp_base_url.rstrip('/')}/chat/completions"
+        if not url.endswith("/chat/completions"):
+            url = f"{url}/v1/chat/completions"
+
+        user_content: List[Dict[str, Any]] = [{"type": "text", "text": prompt}]
+
+        # Add image tiles for multimodal vision via mmproj
+        for tile in tiles[:3]:
+            b64 = self._encode_image_b64(tile.path)
+            if b64:
+                user_content.append({
+                    "type": "image_url",
+                    "image_url": {"url": f"data:image/jpeg;base64,{b64}"},
+                })
+
+        payload = {
+            "model": self.llamacpp_model_name,
+            "messages": [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_content if len(user_content) > 1 else prompt},
+            ],
+            "response_format": {"type": "json_object"},
+            "temperature": 0.15,
+        }
+
+        with httpx.Client(timeout=120.0) as client:
+            resp = client.post(url, json=payload)
+            resp.raise_for_status()
+            data = resp.json()
+            return data["choices"][0]["message"]["content"]
+
+    @retry(max_retries=2, backoff=2.0, exceptions=(httpx.HTTPError, OSError))
     def _call_ollama_vision(
         self,
         prompt: str,
@@ -179,7 +226,7 @@ Your job is to analyze web content and visual document screenshots, triage into 
         """Call self-hosted Ollama Vision Model (e.g. llama3.2-vision, qwen2.5-vl)."""
         url = f"{self.vision_base_url.rstrip('/')}/api/generate"
         b64_images = []
-        for tile in tiles[:3]:  # Send up to 3 primary tiles
+        for tile in tiles[:3]:
             b64 = self._encode_image_b64(tile.path)
             if b64:
                 b64_images.append(b64)
@@ -221,7 +268,6 @@ Your job is to analyze web content and visual document screenshots, triage into 
 
         user_content: List[Dict[str, Any]] = [{"type": "text", "text": prompt}]
 
-        # Add image tiles as base64 data URLs
         for tile in tiles[:3]:
             b64 = self._encode_image_b64(tile.path)
             if b64:
@@ -241,40 +287,6 @@ Your job is to analyze web content and visual document screenshots, triage into 
         }
         with httpx.Client(timeout=90.0) as client:
             resp = client.post(url, headers=headers, json=payload)
-            resp.raise_for_status()
-            data = resp.json()
-            return data["choices"][0]["message"]["content"]
-
-    @retry(max_retries=2, backoff=2.0, exceptions=(httpx.HTTPError, OSError))
-    def _call_vllm_vision(
-        self,
-        prompt: str,
-        system_prompt: str,
-        tiles: List[VisualTile],
-        **kwargs: Any,
-    ) -> str:
-        """Call self-hosted OpenAI-compatible local Vision endpoint (vLLM / SGLang)."""
-        url = f"{self.vision_base_url.rstrip('/')}/chat/completions"
-        user_content: List[Dict[str, Any]] = [{"type": "text", "text": prompt}]
-
-        for tile in tiles[:3]:
-            b64 = self._encode_image_b64(tile.path)
-            if b64:
-                user_content.append({
-                    "type": "image_url",
-                    "image_url": {"url": f"data:image/jpeg;base64,{b64}"},
-                })
-
-        payload = {
-            "model": self.vision_model,
-            "messages": [
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_content},
-            ],
-            "temperature": 0.2,
-        }
-        with httpx.Client(timeout=120.0) as client:
-            resp = client.post(url, json=payload)
             resp.raise_for_status()
             data = resp.json()
             return data["choices"][0]["message"]["content"]
@@ -306,11 +318,10 @@ Your job is to analyze web content and visual document screenshots, triage into 
     ) -> TriageResult:
         """
         Process scraped document through Multimodal AI Librarian pipeline.
-        Utilizes visual screenshot tiles when available.
+        Utilizes Muse-Glimmer-30B, Ollama, or OpenAI.
         """
         curr_date = date_str or datetime.now(timezone.utc).strftime("%Y-%m-%d")
 
-        # Guardrail: Handle failed scrapes if no text and no visual tiles exist
         if scraped.failed_scrape and not scraped.has_visuals:
             logger.info("Content flagged as failed scrape: %s", scraped.failure_reason)
             return TriageResult(
@@ -345,15 +356,16 @@ CONTENT TO ANALYZE:
 
         raw_llm_output = ""
         try:
-            # Route based on provider preference & visual availability
-            if self.use_openai and self.openai_key:
+            # 1. Primary: Muse-Glimmer-30B (llama.cpp server)
+            if self.llm_provider == "llamacpp" and not self.use_openai:
+                logger.info("Processing with Muse-Glimmer-30B (llama.cpp Metal, visuals=%s) for %s", scraped.has_visuals, scraped.url)
+                raw_llm_output = self._call_llamacpp(user_prompt, system_prompt, scraped.visual_tiles, **kwargs)
+            # 2. Cloud: OpenAI
+            elif self.use_openai and self.openai_key:
                 logger.info("Processing with OpenAI (%s, visuals=%s) for %s", self.openai_model, scraped.has_visuals, scraped.url)
                 raw_llm_output = self._call_openai_vision(user_prompt, system_prompt, scraped.visual_tiles, **kwargs)
-            elif self.vision_provider == "vllm":
-                logger.info("Processing with local vLLM endpoint (%s) for %s", self.vision_model, scraped.url)
-                raw_llm_output = self._call_vllm_vision(user_prompt, system_prompt, scraped.visual_tiles, **kwargs)
+            # 3. Local: Ollama
             else:
-                # Default: Ollama (vision-enabled if tiles exist)
                 logger.info("Processing with Ollama (%s, visuals=%s) for %s", self.vision_model if scraped.has_visuals else self.ollama_model, scraped.has_visuals, scraped.url)
                 raw_llm_output = self._call_ollama_vision(user_prompt, system_prompt, scraped.visual_tiles, **kwargs)
         except Exception as e:
@@ -367,7 +379,7 @@ CONTENT TO ANALYZE:
 
         item_type = preset_type or parsed.get("type", "job" if category == "jobs" else "knowledge")
         title = parsed.get("title") or scraped.title or "Untitled Document"
-        summary = parsed.get("summary") or "Summary generated from visual analysis."
+        summary = parsed.get("summary") or "Summary generated from intelligent triage."
         insights = parsed.get("insights") or []
         tags = parsed.get("tags") or [category]
         code_snippets = parsed.get("code_snippets") or []

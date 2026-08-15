@@ -30,9 +30,25 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Test Self-Hosted Vision Models with Librarian AI / PixelRAG")
     parser.add_argument("--url", type=str, help="Web URL to screenshot and visually analyze")
     parser.add_argument("--image", type=str, help="Path to local image/diagram to test directly")
-    parser.add_argument("--provider", type=str, default="ollama", choices=["ollama", "vllm", "openai"], help="Vision provider")
-    parser.add_argument("--model", type=str, default="llama3.2-vision", help="Model name (e.g. llama3.2-vision, qwen2.5-vl, gpt-4o)")
-    parser.add_argument("--base-url", type=str, default="http://localhost:11434", help="Base URL for Ollama or vLLM endpoint")
+    parser.add_argument(
+        "--provider",
+        type=str,
+        default="llamacpp",
+        choices=["llamacpp", "ollama", "vllm", "openai"],
+        help="Vision provider (default: llamacpp for Muse-Glimmer-30B)",
+    )
+    parser.add_argument(
+        "--model",
+        type=str,
+        default="Muse-Glimmer-30B",
+        help="Model name (e.g. Muse-Glimmer-30B, llama3.2-vision, qwen2.5-vl, gpt-4o)",
+    )
+    parser.add_argument(
+        "--base-url",
+        type=str,
+        default="http://localhost:8080/v1",
+        help="Base URL for llama.cpp, Ollama, or vLLM endpoint",
+    )
     args = parser.parse_args()
 
     if not args.url and not args.image:

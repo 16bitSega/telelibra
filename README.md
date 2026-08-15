@@ -1,92 +1,71 @@
-# Librarian AI 📚🧠
+# Librarian AI
 
-Personal Intelligence ETL (Extract, Transform, Load) pipeline that monitors your **Telegram "Saved Messages"**, scrapes web sources (X/Twitter, LinkedIn, GitHub, Habr, tech blogs), triages content into **Job Opportunities** or **Knowledge (20 Obsidian folders)**, and generates structured, **NotebookLM-ready Markdown notes** in your Obsidian Vault with **Smart Overwrite** tracking and **Google Calendar** integration.
+Personal Intelligence ETL (Extract, Transform, Load) pipeline that monitors your **Telegram "Saved Messages"**, scrapes web sources (X/Twitter, LinkedIn, GitHub, Habr, tech blogs), triages content into **Job Opportunities** or **Knowledge (20 Obsidian folders)** with **Muse-Glimmer-30B** and **PixelRAG Visual Engine**, and generates structured, **NotebookLM-ready Markdown notes** in your Obsidian Vault with **Smart Overwrite** tracking and **Google Calendar** integration.
 
 ---
 
 ## Key Features
 
-1. **Telegram Ingestion Filter**:
+1. **Primary Local AI Engine: Muse-Glimmer-30B**:
+   - Dense ~30B parameter model with GQA + sliding-window attention (context up to 131,072+ tokens).
+   - Runs natively on **Apple Silicon Metal** via `llama-server` (llama.cpp).
+   - Dedicated 24GB Unified Memory tuning with single-slot isolation (`-np 1`) and controllable reasoning effort (`high`).
+   - Multimodal vision support via `mmproj-kquant.gguf` projector.
+   - High generation throughput via speculative decoding with `dflash-kquant.gguf`.
+2. **PixelRAG-Inspired Visual Engine**:
+   - Renders dynamic web pages and social posts into **1568px screenshot tiles** via Playwright.
+   - Strips DOM clutter (cookie banners, modals, floating popups) prior to capture.
+   - Extracts architecture flowcharts, infographics, benchmark charts, and tables straight from images.
+   - Saves visual tiles to `vault/attachments/` and embeds them directly in Obsidian notes.
+3. **Telegram Ingestion Filter**:
    - Streams Telegram "Saved Messages" using Telethon.
    - Automatically filters for messages containing URLs dated **>= September 1, 2025**.
-2. **Smart Overwrite Engine**:
-   - Tracks all processed URLs and their file paths in SQLite (`processed_links.db`).
-   - If you move a file into a different Obsidian subfolder (e.g. from `/drafts` to `/agents`), Librarian AI detects the new location via frontmatter scanning and updates the existing note in-place instead of creating duplicates like `Title (1).md`.
-3. **Multi-Source Scraping**:
-   - **X.com / LinkedIn**: Automated Playwright scraper with cookie injection (`cookies.json`) and double-scroll to capture full threads and dynamic replies without context loss.
-   - **GitHub**: Automatically converts repository links to raw `README.md` content via `raw.githubusercontent.com`.
-   - **Technical Articles & Habr**: Clean HTML parsing and text extraction via Trafilatura.
-   - **Integrity Guardrail**: Detects login walls and text < 200 characters, tagging them with `#failed_scrape` and routing to the `other` folder without polluting summaries.
-4. **AI Librarian Triage**:
+4. **Smart Overwrite Engine**:
+   - Tracks all processed URLs and file paths in SQLite (`processed_links.db`).
+   - Detects if notes are moved across folders in Obsidian, updating them in-place instead of creating duplicates like `Title (1).md`.
+5. **AI Librarian Triage & Translation**:
    - **Job Branch**: Detects job postings (`linkedin.com/jobs` or hiring text), saves note to `/jobs`, and schedules a review event in **Google Calendar (Tomorrow @ 9:00 AM)**.
    - **Knowledge Branch**: Classifies into exactly one of **20 taxonomy folders**:
      `research`, `agents`, `workflows`, `ML`, `big_data`, `trading`, `jobs`, `ideas`, `resources`, `drafts`, `repositories`, `tools`, `rules`, `policy`, `cases`, `issues`, `literature`, `hooks`, `hints`, `other`.
    - **Russian Translation**: Automatically translates Russian sources (Habr, etc.) to English AI Summaries and English tags.
    - **NotebookLM Metadata**: Injects YAML frontmatter (`url`, `date`, `category`, `type`) with clean markdown formatting.
-5. **Local / Cloud AI Toggle**:
-   - Defaults to local **Ollama** (`http://localhost:11434` with `llama3:8b` or `mistral`).
-   - Switchable to OpenAI **GPT-4o** via `USE_OPENAI=true` in `.env`.
-
----
-
-## Project Structure
-
-```
-/telelibra
-├── main.py              # Batch trigger & Telegram stream orchestrator
-├── database.py          # SQLite persistence & Smart Overwrite vault relocation
-├── scraper.py           # Playwright/Trafilatura logic & integrity checks
-├── ai_engine.py         # Prompt engineering, LLM routing & NotebookLM generator
-├── calendar_util.py     # Google Calendar OAuth & Event creation (Tomorrow @ 9 AM)
-├── config.py            # .env management & 20-Folder Taxonomy definitions
-├── utils.py             # Decorators (@measure_performance, @retry), helpers
-├── cookies.json         # Browser cookies for authenticated X / LinkedIn scraping
-├── Dockerfile           # Playwright-heavy Docker container
-├── docker-compose.yml   # Volume mapping for Obsidian Vault & Ollama gateway
-├── requirements.txt     # Python dependencies
-├── pyproject.toml       # Project metadata & test configs
-└── .env.example         # Template environment configuration
-```
 
 ---
 
 ## Quickstart
 
-### 1. Setup Environment
-Copy the `.env.example` file to `.env` and fill in your Telegram API credentials:
+### 1. Launch Muse-Glimmer-30B Local Server (Mac M5 Pro)
+
+Place model files in `llama/runtime/models/Muse-Glimmer-30B/`:
+- `muse-glimmer-30B-kquant-17gb.gguf` (Main model, ~16.8GB)
+- `mmproj-kquant.gguf` (Vision projector, ~1.4GB)
+- `dflash-kquant.gguf` (Speculative drafter, ~1.6GB)
+
+Launch the server:
+```bash
+./scripts/run_muse_glimmer.sh
+```
+The server will start at `http://localhost:8080/v1` with Metal GPU acceleration and 32k context.
+
+### 2. Configure Environment
 ```bash
 cp .env.example .env
 ```
-Get Telegram credentials (`TELEGRAM_API_ID` & `TELEGRAM_API_HASH`) from [my.telegram.org](https://my.telegram.org).
+Fill in your Telegram API credentials (`TELEGRAM_API_ID` & `TELEGRAM_API_HASH` from [my.telegram.org](https://my.telegram.org)).
 
-### 2. Configure Cookies for X.com / LinkedIn (Optional)
-Populate `cookies.json` with valid cookies for X.com and LinkedIn to scrape authenticated content and private posts.
-
-### 3. Run Locally
-
-Install dependencies and Playwright browser:
+### 3. Test Local Vision Pipeline
 ```bash
-pip install -r requirements.txt
-playwright install chromium
+# Test against a live website or social post
+python test_vision_pipeline.py --url "https://news.ycombinator.com" --provider llamacpp --model Muse-Glimmer-30B
+
+# Test single URL execution with visual screenshot tiles
+python main.py --url "https://github.com/microsoft/autogen" --visual
 ```
 
-Test a single URL directly:
-```bash
-python main.py --url "https://github.com/microsoft/autogen"
-```
-
-Run full Telegram batch scan from September 1, 2025:
+### 4. Run Full Batch Telegram Stream
 ```bash
 python main.py
 ```
-
-### 4. Run with Docker Compose
-
-Ensure Ollama is running on your host machine, then launch the container:
-```bash
-docker-compose up --build
-```
-Your notes will automatically appear in your local `./vault` directory, categorized across the 20 taxonomy folders.
 
 ---
 

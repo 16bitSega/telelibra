@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "librarian-ai"
-version = "0.1.1"
-description = "Personal Intelligence ETL pipeline for Telegram, Web Scraping, AI Triage, and Obsidian Vault integration."
+version = "0.1.2"
+description = "Personal Intelligence ETL pipeline with Muse-Glimmer-30B, PixelRAG visual engine, Telegram, and Obsidian Vault integration."
 authors = [{ name = "Librarian AI Team" }]
 requires-python = ">=3.11"
 dependencies = [
