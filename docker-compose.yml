@@ -1,0 +1,30 @@
+version: '3.8'
+
+services:
+  librarian-ai:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: librarian-ai
+    restart: "no"
+    env_file:
+      - .env
+    environment:
+      - OLLAMA_BASE_URL=http://host.docker.internal:11434
+      - OBSIDIAN_VAULT_PATH=/vault
+      - DATABASE_PATH=/app/data/processed_links.db
+    volumes:
+      # Mount your local Obsidian Vault directory to /vault in the container
+      - ./vault:/vault
+      # Persist SQLite tracking database across container runs
+      - ./data:/app/data
+      # Mount cookies.json for X.com / LinkedIn authenticated scraping
+      - ./cookies.json:/app/cookies.json:ro
+      # Persist Telethon Telegram session file
+      - ./librarian_session.session:/app/librarian_session.session
+      # Optional: Google Calendar OAuth token credentials
+      - ./credentials.json:/app/credentials.json:ro
+      - ./token.json:/app/token.json
+    extra_hosts:
+      # Enable connecting to Ollama running on host machine
+      - "host.docker.internal:host-gateway"
