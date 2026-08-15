@@ -1,6 +1,40 @@
-# Librarian AI 📚🧠
+# Librarian AI
 
 Personal Intelligence ETL (Extract, Transform, Load) pipeline that monitors your **Telegram "Saved Messages"**, scrapes web sources (X/Twitter, LinkedIn, GitHub, Habr, tech blogs), triages content into **Job Opportunities** or **Knowledge (20 Obsidian folders)**, and generates structured, **NotebookLM-ready Markdown notes** in your Obsidian Vault with **Smart Overwrite** tracking and **Google Calendar** integration.
+
+---
+
+## Architecture & Workflow
+
+```mermaid
+flowchart TD
+    TG[Telegram Saved Messages >= 2025-09-01] -->|Telethon Stream| Ingest[main.py: Ingestion Filter]
+    Ingest --> DBCheck{database.py: URL in DB?}
+    
+    DBCheck -->|Found| CheckMove{File moved in Vault?}
+    CheckMove -->|Yes| SmartPath[Locate New Vault Path]
+    CheckMove -->|No| ExistingPath[Reuse Stored Path]
+    DBCheck -->|Not Found| NewPath[Compute Target Category Path]
+    
+    Ingest --> Scraper[scraper.py: Multi-Source Scraper]
+    Scraper -->|X.com / LinkedIn| Playwright[Playwright + Cookies + 2x Scroll]
+    Scraper -->|GitHub| GitHubRaw[raw.githubusercontent.com README]
+    Scraper -->|Web / Habr| Trafilatura[Trafilatura Cleaner]
+    
+    Scraper --> Integrity{Text < 200 chars OR Login Wall?}
+    Integrity -->|Failed| FailedRoute[Folder: other + #failed_scrape]
+    Integrity -->|Passed| AITriage[ai_engine.py: Ollama / OpenAI Triage]
+    
+    AITriage -->|Job Branch| JobAction[Folder: /jobs + Calendar Event Tomorrow @ 9 AM]
+    AITriage -->|Knowledge Branch| KnowledgeAction[Folder: 1 of 20 Taxonomy Folders]
+    
+    JobAction --> NoteGen[Generate NotebookLM Markdown]
+    KnowledgeAction --> NoteGen
+    FailedRoute --> NoteGen
+    
+    NoteGen --> SaveNote[Write to Obsidian Vault]
+    SaveNote --> DBUpdate[Update SQLite Tracking DB]
+```
 
 ---
 
@@ -11,7 +45,7 @@ Personal Intelligence ETL (Extract, Transform, Load) pipeline that monitors your
    - Automatically filters for messages containing URLs dated **>= September 1, 2025**.
 2. **Smart Overwrite Engine**:
    - Tracks all processed URLs and their file paths in SQLite (`processed_links.db`).
-   - If you move a file into a different Obsidian subfolder (e.g. from `/drafts` to `/agents`), Librarian AI detects the new location via frontmatter scanning and updates the existing note in-place instead of creating duplicates like `Title (1).md`.
+   - If you move a note to a different folder in Obsidian (e.g. from `/drafts` to `/agents`), Librarian AI scans frontmatter URLs and updates the note in-place instead of creating duplicates like `Title (1).md`.
 3. **Multi-Source Scraping**:
    - **X.com / LinkedIn**: Automated Playwright scraper with cookie injection (`cookies.json`) and double-scroll to capture full threads and dynamic replies without context loss.
    - **GitHub**: Automatically converts repository links to raw `README.md` content via `raw.githubusercontent.com`.
@@ -50,39 +84,122 @@ Personal Intelligence ETL (Extract, Transform, Load) pipeline that monitors your
 
 ---
 
-## Quickstart
+## Step-by-Step Configuration Guide
 
-### 1. Setup Environment
-Copy the `.env.example` file to `.env` and fill in your Telegram API credentials:
+### 1. Prerequisites
+- **Python 3.11+** installed locally (or Docker).
+- **Telegram API Credentials**:
+  1. Visit [https://my.telegram.org](https://my.telegram.org) and log in.
+  2. Go to **API development tools** and create an app.
+  3. Copy your `api_id` and `api_hash`.
+- **AI Engine**:
+  - **Local (Default)**: Install and start [Ollama](https://ollama.ai) (`ollama run llama3:8b`).
+  - **Cloud**: Obtain an OpenAI API key from [platform.openai.com](https://platform.openai.com).
+
+### 2. Environment Variables (.env)
+Copy `.env.example` to `.env`:
 ```bash
 cp .env.example .env
 ```
-Get Telegram credentials (`TELEGRAM_API_ID` & `TELEGRAM_API_HASH`) from [my.telegram.org](https://my.telegram.org).
 
-### 2. Configure Cookies for X.com / LinkedIn (Optional)
-Populate `cookies.json` with valid cookies for X.com and LinkedIn to scrape authenticated content and private posts.
+Configure your parameters in `.env`:
+```ini
+# Telegram Credentials
+TELEGRAM_API_ID=12345678
+TELEGRAM_API_HASH=your_telegram_api_hash_here
+TELEGRAM_PHONE=+1234567890
+TELEGRAM_SESSION_NAME=librarian_session
 
-### 3. Run Locally
+# Storage & Vault Paths
+DATABASE_PATH=processed_links.db
+OBSIDIAN_VAULT_PATH=./vault
+COOKIES_PATH=cookies.json
 
-Install dependencies and Playwright browser:
+# Local Ollama Settings (Default)
+USE_OPENAI=false
+OLLAMA_BASE_URL=http://localhost:11434
+OLLAMA_MODEL=llama3:8b
+
+# Cloud OpenAI Settings (Optional)
+# USE_OPENAI=true
+# OPENAI_API_KEY=sk-proj-your_key_here
+# OPENAI_MODEL=gpt-4o
+
+# Scraping Settings
+PLAYWRIGHT_HEADLESS=true
+SCRAPE_TIMEOUT_MS=30000
+
+# Google Calendar Integration (Optional)
+GOOGLE_CALENDAR_CREDENTIALS=credentials.json
+GOOGLE_CALENDAR_TOKEN=token.json
+```
+
+### 3. Cookies Configuration for X.com / LinkedIn (Optional)
+To scrape private threads or avoid rate limits on X.com and LinkedIn, export your browser cookies into `cookies.json`:
+```json
+[
+  {
+    "name": "auth_token",
+    "value": "YOUR_X_AUTH_TOKEN",
+    "domain": ".x.com",
+    "path": "/",
+    "httpOnly": true,
+    "secure": true
+  },
+  {
+    "name": "li_at",
+    "value": "YOUR_LINKEDIN_LI_AT",
+    "domain": ".linkedin.com",
+    "path": "/",
+    "httpOnly": true,
+    "secure": true
+  }
+]
+```
+
+### 4. Google Calendar OAuth Setup (Optional)
+If you want job opportunities to be scheduled for review tomorrow at 9:00 AM:
+1. Enable Google Calendar API in Google Cloud Console.
+2. Download OAuth Client credentials as `credentials.json` into the project root.
+3. On first job event creation, a browser window will open to authorize calendar access.
+
+---
+
+## How to Run
+
+### Method A: Run Locally
+
+1. **Install Dependencies & Playwright Browser**:
 ```bash
 pip install -r requirements.txt
 playwright install chromium
 ```
 
-Test a single URL directly:
+2. **Test a Single URL (Direct Mode)**:
 ```bash
 python main.py --url "https://github.com/microsoft/autogen"
 ```
 
-Run full Telegram batch scan from September 1, 2025:
+3. **Dry-Run Mode (No Files Written)**:
 ```bash
-python main.py
+python main.py --url "https://habr.com/ru/articles/78910/" --dry-run
 ```
 
-### 4. Run with Docker Compose
+4. **Run Full Telegram Batch Scanner**:
+```bash
+# Scans Saved Messages from September 1, 2025:
+python main.py
 
-Ensure Ollama is running on your host machine, then launch the container:
+# Optional: specify custom start date or message limit:
+python main.py --since 2025-09-15 --limit 50
+```
+
+---
+
+### Method B: Run with Docker Compose
+
+1. Ensure Ollama is running on your host machine.
+2. Build and start the container:
 ```bash
 docker-compose up --build
 ```
@@ -90,7 +207,7 @@ Your notes will automatically appear in your local `./vault` directory, categori
 
 ---
 
-## 20-Folder Taxonomy
+## 20-Folder Taxonomy Guide
 
 | Folder | Definition |
 |---|---|
@@ -114,3 +231,13 @@ Your notes will automatically appear in your local `./vault` directory, categori
 | `hooks` | Event triggers, webhooks, integration callbacks, signals |
 | `hints` | Quick tips, shortcuts, performance hacks, hidden features |
 | `other` | Miscellaneous links, failed scrapes, login walls |
+
+---
+
+## Running Tests
+
+Run the complete test suite:
+```bash
+pytest -v
+```
+All unit and integration tests verify Smart Overwrite path resolution, scraping integrity, AI triage, and Google Calendar event formatting.
