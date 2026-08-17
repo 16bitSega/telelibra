@@ -125,30 +125,33 @@ playwright install chromium
 3. Create a new application (e.g. App title: `Telelibra`, Short name: `telelibra`).
 4. Note your **`api_id`** (numbers) and **`api_hash`** (alphanumeric string).
 
-### 4. Configure Your Environment Variables
+### 4. Configure Your Environment Variables (.env)
 Copy `.env.example` to `.env`:
 ```bash
 cp .env.example .env
 ```
 
-Open `.env` and configure your settings:
+Open `.env` and set your preferred LLM provider using the **1-line switcher**:
+
+#### 🟢 Option A: Instant Cloud Start (OpenAI API Key — under 30 seconds)
 ```ini
-# Telegram Credentials
-TELEGRAM_API_ID=12345678
-TELEGRAM_API_HASH=your_telegram_api_hash_here
-TELEGRAM_PHONE=+380XXXXXXXXX
-TELEGRAM_SESSION_NAME=librarian_telegram
-
-# Primary LLM Provider (options: 'llamacpp', 'openai', 'ollama')
-LLM_PROVIDER=llamacpp
-LLAMACPP_BASE_URL=http://localhost:8080/v1
-LLAMACPP_MODEL_NAME=Muse-Glimmer-30B
-
-# Cloud Fallback / Alternative (Optional)
-USE_OPENAI=false
-OPENAI_API_KEY=sk-proj-your_key_here
-OPENAI_MODEL=gpt-4o
+LLM_PROVIDER=openai
+OPENAI_API_KEY=sk-proj-your_actual_api_key_here
 ```
+
+#### 🍏 Option B: 100% Private Local Inference (Mac Apple Silicon Metal)
+```ini
+LLM_PROVIDER=llamacpp
+```
+*(Then launch the local Metal server via `./run_llm_server.sh`)*
+
+#### 🦙 Option C: Cross-Platform Local Ollama (Mac / Linux / Windows)
+```ini
+LLM_PROVIDER=ollama
+OLLAMA_MODEL=llama3:8b
+```
+
+> 📖 For advanced configurations, speculative decoding, and custom endpoints (vLLM / LM Studio), see the full [**LLM Providers Guide**](LLM_PROVIDERS_GUIDE.md).
 
 ### 5. (Optional) Configure Social Session Cookies
 To scrape private LinkedIn networks or protected X/Twitter posts without login blocks:
