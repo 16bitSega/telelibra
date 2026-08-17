@@ -1,243 +1,234 @@
-# Librarian AI
+# Telelibra — Personal Intelligence ETL Pipeline 
 
-Personal Intelligence ETL (Extract, Transform, Load) pipeline that monitors your **Telegram "Saved Messages"**, scrapes web sources (X/Twitter, LinkedIn, GitHub, Habr, tech blogs), triages content into **Job Opportunities** or **Knowledge (20 Obsidian folders)**, and generates structured, **NotebookLM-ready Markdown notes** in your Obsidian Vault with **Smart Overwrite** tracking and **Google Calendar** integration.
+**Telelibra** is an autonomous Personal Intelligence ETL (Extract, Transform, Load) pipeline designed for continuous knowledge synthesis and personal intelligence management.
+
+It ingests your **Telegram "Saved Messages"**, scrapes multi-platform web sources (**YouTube Speech-to-Text Transcripts, ArXiv Papers, X/Twitter, LinkedIn, GitHub, Habr, Technical Blogs**), cleans audio and advertising noise, deeply analyzes content via local or cloud LLMs (**Muse-Glimmer-30B on Apple Silicon Metal**, OpenAI GPT-4o, or Ollama), automatically categorizes notes into an **Obsidian 20-Folder Knowledge Taxonomy**, prevents duplicate notes via **Smart Overwrite**, and generates a unified **Google NotebookLM Master Compendium** for audio deep dives, podcasts, and cross-document reasoning.
 
 ---
 
-## Architecture & Workflow
+## 🏛️ System Architecture & Workflow
 
 ```mermaid
 flowchart TD
-    TG[Telegram Saved Messages >= 2025-09-01] -->|Telethon Stream| Ingest[main.py: Ingestion Filter]
-    Ingest --> DBCheck{database.py: URL in DB?}
+    TG[Telegram Saved Messages >= Cutoff Date] -->|Telethon Stream| Runner[run_timed_session.py: Timed Session Runner]
     
-    DBCheck -->|Found| CheckMove{File moved in Vault?}
-    CheckMove -->|Yes| SmartPath[Locate New Vault Path]
-    CheckMove -->|No| ExistingPath[Reuse Stored Path]
-    DBCheck -->|Not Found| NewPath[Compute Target Category Path]
+    Runner --> Checkpoint{Checkpoints DB: URL Already Processed?}
+    Checkpoint -->|Yes & Note on Disk| Skip[⏩ Fast Skip: 0.0001s / 0 Tokens Wasted]
     
-    Ingest --> Scraper[scraper.py: Multi-Source Scraper]
-    Scraper -->|X.com / LinkedIn| Playwright[Playwright + Cookies + 2x Scroll]
-    Scraper -->|GitHub| GitHubRaw[raw.githubusercontent.com README]
-    Scraper -->|Web / Habr| Trafilatura[Trafilatura Cleaner]
+    Checkpoint -->|No / Reprocess| Scraper[scraper.py: Multi-Source Scraper Engine]
     
-    Scraper --> Integrity{Text < 200 chars OR Login Wall?}
-    Integrity -->|Failed| FailedRoute[Folder: other + #failed_scrape]
-    Integrity -->|Passed| AITriage[ai_engine.py: Ollama / OpenAI Triage]
+    Scraper -->|YouTube / Podcast| YTExtract[youtube-transcript-api + oEmbed: Full Spoken Transcript]
+    Scraper -->|ArXiv Research| ArXivExtract[ArXiv API: XML Abstract & Authors]
+    Scraper -->|GitHub Repos| GHExtract[Raw README.md Extraction]
+    Scraper -->|LinkedIn / X / Web| PWExtract[Thread-Isolated Playwright + PixelRAG Tiles]
     
-    AITriage -->|Job Branch| JobAction[Folder: /jobs + Calendar Event Tomorrow @ 9 AM]
-    AITriage -->|Knowledge Branch| KnowledgeAction[Folder: 1 of 20 Taxonomy Folders]
+    YTExtract --> Cleaner[utils.py: Audio Noise & Promo Fluff Cleaner]
+    ArXivExtract --> Cleaner
+    GHExtract --> Cleaner
+    PWExtract --> Cleaner
     
-    JobAction --> NoteGen[Generate NotebookLM Markdown]
-    KnowledgeAction --> NoteGen
-    FailedRoute --> NoteGen
+    Cleaner -->|Strips [music], [snorts], stutters & ads| AIEngine[ai_engine.py: AI Librarian Triage]
     
-    NoteGen --> SaveNote[Write to Obsidian Vault]
-    SaveNote --> DBUpdate[Update SQLite Tracking DB]
+    AIEngine -->|Primary Provider| LocalMetal[run_llm_server.sh: Muse-Glimmer-30B on Metal]
+    AIEngine -.->|Fallback Chain| CloudOpenAI[OpenAI GPT-4o]
+    AIEngine -.->|Fallback Chain| LocalOllama[Ollama llama3:8b]
+    
+    LocalMetal --> TriageResult[Structured JSON: Title, Category, Summary, Insights, Tags]
+    
+    TriageResult --> SmartOverwrite{database.py: Smart Overwrite Engine}
+    SmartOverwrite -->|Relocate / Update in-place| Vault[vault/: 20-Folder Knowledge Taxonomy]
+    
+    Vault --> Organizer[vault_organizer.py: Knowledge Compendium Generator]
+    Organizer --> NotebookLM[vault/NOTEBOOKLM_KNOWLEDGE_BASE.md: Ready for Google NotebookLM]
 ```
 
 ---
 
-## Key Features
+## ⚡ Key Capabilities
 
-1. **Telegram Ingestion Filter**:
-   - Streams Telegram "Saved Messages" using Telethon.
-   - Automatically filters for messages containing URLs dated **>= September 1, 2025**.
-2. **Smart Overwrite Engine**:
-   - Tracks all processed URLs and their file paths in SQLite (`processed_links.db`).
-   - If you move a note to a different folder in Obsidian (e.g. from `/drafts` to `/agents`), Librarian AI scans frontmatter URLs and updates the note in-place instead of creating duplicates like `Title (1).md`.
-3. **Multi-Source Scraping**:
-   - **X.com / LinkedIn**: Automated Playwright scraper with cookie injection (`cookies.json`) and double-scroll to capture full threads and dynamic replies without context loss.
-   - **GitHub**: Automatically converts repository links to raw `README.md` content via `raw.githubusercontent.com`.
-   - **Technical Articles & Habr**: Clean HTML parsing and text extraction via Trafilatura.
-   - **Integrity Guardrail**: Detects login walls and text < 200 characters, tagging them with `#failed_scrape` and routing to the `other` folder without polluting summaries.
-4. **AI Librarian Triage**:
-   - **Job Branch**: Detects job postings (`linkedin.com/jobs` or hiring text), saves note to `/jobs`, and schedules a review event in **Google Calendar (Tomorrow @ 9:00 AM)**.
-   - **Knowledge Branch**: Classifies into exactly one of **20 taxonomy folders**:
-     `research`, `agents`, `workflows`, `ML`, `big_data`, `trading`, `jobs`, `ideas`, `resources`, `drafts`, `repositories`, `tools`, `rules`, `policy`, `cases`, `issues`, `literature`, `hooks`, `hints`, `other`.
-   - **Russian Translation**: Automatically translates Russian sources (Habr, etc.) to English AI Summaries and English tags.
-   - **NotebookLM Metadata**: Injects YAML frontmatter (`url`, `date`, `category`, `type`) with clean markdown formatting.
-5. **Local / Cloud AI Toggle**:
-   - Defaults to local **Ollama** (`http://localhost:11434` with `llama3:8b` or `mistral`).
-   - Switchable to OpenAI **GPT-4o** via `USE_OPENAI=true` in `.env`.
+1. **🎙️ Complete YouTube & Podcast Audio Speech-to-Text**:
+   - Fetches complete spoken transcripts (up to 70,000+ characters) across English, Ukrainian, Russian, and all languages.
+   - Cleans acoustic noise tags (`[music]`, `[applause]`, `[snorts]`, `[coughing]`, speaker arrows `>>`) and stutters.
+   - Strips channel sponsorship plugs, like/subscribe prompts, and Telegram bot advertising.
 
----
+2. **🧠 High-Performance Local LLM on Apple Silicon Metal**:
+   - Runs `Muse-Glimmer-30B` locally with 16k context window, **Q8_0 KV Cache** (50% VRAM savings), and reasoning preservation.
+   - Fits comfortably into **24GB Unified Memory** (utilizing ~18.2 GB, leaving ample headroom for macOS).
+   - Supports **Speculative Decoding (`dflash-kquant.gguf`)** for 2x–2.5x generation speedup.
 
-## Project Structure
+3. **📂 20-Folder Obsidian Knowledge Taxonomy**:
+   - Classifies notes into:
+     `/agents`, `/ML`, `/workflows`, `/cases`, `/research`, `/tools`, `/trading`, `/hints`, `/literature`, `/repositories`, `/issues`, `/jobs`, `/ideas`, `/resources`, `/drafts`, `/rules`, `/policy`, `/big_data`, `/hooks`, `/other`.
+   - **Smart Overwrite Engine**: If you move a note to a different folder in Obsidian, the system automatically detects its new location and updates it in-place without generating duplicates like `Note (1).md`.
 
-```
-/telelibra
-├── main.py              # Batch trigger & Telegram stream orchestrator
-├── database.py          # SQLite persistence & Smart Overwrite vault relocation
-├── scraper.py           # Playwright/Trafilatura logic & integrity checks
-├── ai_engine.py         # Prompt engineering, LLM routing & NotebookLM generator
-├── calendar_util.py     # Google Calendar OAuth & Event creation (Tomorrow @ 9 AM)
-├── config.py            # .env management & 20-Folder Taxonomy definitions
-├── utils.py             # Decorators (@measure_performance, @retry), helpers
-├── cookies.json         # Browser cookies for authenticated X / LinkedIn scraping
-├── Dockerfile           # Playwright-heavy Docker container
-├── docker-compose.yml   # Volume mapping for Obsidian Vault & Ollama gateway
-├── requirements.txt     # Python dependencies
-├── pyproject.toml       # Project metadata & test configs
-└── .env.example         # Template environment configuration
-```
+4. **📚 Google NotebookLM Master Compendium (`NOTEBOOKLM_KNOWLEDGE_BASE.md`)**:
+   - Automatically aggregates all vault notes into a structured, high-density Knowledge Pack.
+   - Includes executive tables of contents, chapter overviews, synthesized summaries, actionable insights, and source excerpts ready for direct upload into **Google NotebookLM** for generating **two-host audio podcasts** and cross-document Q&A.
+
+5. **⏱️ Timed Sessions with SQLite State Checkpointing**:
+   - Run batch sessions in 15-minute, 60-minute, or custom intervals with real-time countdown progress.
+   - State is saved per-URL in SQLite (`processed_links.db`). Graceful `Ctrl+C` interrupt handling ensures you never lose progress.
 
 ---
 
-## Step-by-Step Configuration Guide
+## 📋 System Requirements
 
-### 1. Prerequisites
-- **Python 3.11+** installed locally (or Docker).
-- **Telegram API Credentials**:
-  1. Visit [https://my.telegram.org](https://my.telegram.org) and log in.
-  2. Go to **API development tools** and create an app.
-  3. Copy your `api_id` and `api_hash`.
-- **AI Engine**:
-  - **Local (Default)**: Install and start [Ollama](https://ollama.ai) (`ollama run llama3:8b`).
-  - **Cloud**: Obtain an OpenAI API key from [platform.openai.com](https://platform.openai.com).
+### Hardware:
+* **Recommended**: Mac with Apple Silicon (**M1 / M2 / M3 / M4 / M5 Pro/Max**) with **24GB+ Unified Memory**.
+* **Alternative**: Any Mac / Linux / Windows system with OpenAI API key (`USE_OPENAI=true`) or local Ollama.
 
-### 2. Environment Variables (.env)
+### Software:
+* **Python 3.10+** (tested on Python 3.11).
+* **llama.cpp** (Homebrew build 10450+ or compiled from source with Metal).
+* **Playwright Chromium** for authenticated social and web rendering.
+
+---
+
+## 🚀 Installation & Setup
+
+### 1. Clone the Repository & Create Virtual Environment
+```bash
+git clone https://github.com/16bitSega/telelibra.git
+cd telelibra
+
+python3 -m venv venv
+source venv/bin/activate
+pip install --upgrade pip
+pip install -r requirements.txt
+```
+
+### 2. Install Playwright Browsers
+```bash
+playwright install chromium
+```
+
+### 3. Configure Environment Variables
 Copy `.env.example` to `.env`:
 ```bash
 cp .env.example .env
 ```
 
-Configure your parameters in `.env`:
+Edit `.env` and fill in your parameters:
 ```ini
-# Telegram Credentials
+# Telegram Credentials (get from https://my.telegram.org)
 TELEGRAM_API_ID=12345678
 TELEGRAM_API_HASH=your_telegram_api_hash_here
-TELEGRAM_PHONE=+1234567890
-TELEGRAM_SESSION_NAME=librarian_session
+TELEGRAM_PHONE=+380XXXXXXXXX
+TELEGRAM_SESSION_NAME=librarian_telegram
 
-# Storage & Vault Paths
-DATABASE_PATH=processed_links.db
-OBSIDIAN_VAULT_PATH=./vault
-COOKIES_PATH=cookies.json
-
-# Local Ollama Settings (Default)
-USE_OPENAI=false
-OLLAMA_BASE_URL=http://localhost:11434
-OLLAMA_MODEL=llama3:8b
-
-# Cloud OpenAI Settings (Optional)
-# USE_OPENAI=true
-# OPENAI_API_KEY=sk-proj-your_key_here
-# OPENAI_MODEL=gpt-4o
-
-# Scraping Settings
-PLAYWRIGHT_HEADLESS=true
-SCRAPE_TIMEOUT_MS=30000
-
-# Google Calendar Integration (Optional)
-GOOGLE_CALENDAR_CREDENTIALS=credentials.json
-GOOGLE_CALENDAR_TOKEN=token.json
+# LLM Provider (llamacpp, openai, or ollama)
+LLM_PROVIDER=llamacpp
+LLAMACPP_BASE_URL=http://localhost:8080/v1
+LLAMACPP_MODEL_NAME=Muse-Glimmer-30B
 ```
 
-### 3. Cookies Configuration for X.com / LinkedIn (Optional)
-To scrape private threads or avoid rate limits on X.com and LinkedIn, export your browser cookies into `cookies.json`:
-```json
-[
-  {
-    "name": "auth_token",
-    "value": "YOUR_X_AUTH_TOKEN",
-    "domain": ".x.com",
-    "path": "/",
-    "httpOnly": true,
-    "secure": true
-  },
-  {
-    "name": "li_at",
-    "value": "YOUR_LINKEDIN_LI_AT",
-    "domain": ".linkedin.com",
-    "path": "/",
-    "httpOnly": true,
-    "secure": true
-  }
-]
+### 4. (Optional) Configure Social Cookies (`cookies.json`)
+To scrape private LinkedIn connections or protected X/Twitter posts:
+```bash
+cp cookies.example.json cookies.json
 ```
-
-### 4. Google Calendar OAuth Setup (Optional)
-If you want job opportunities to be scheduled for review tomorrow at 9:00 AM:
-1. Enable Google Calendar API in Google Cloud Console.
-2. Download OAuth Client credentials as `credentials.json` into the project root.
-3. On first job event creation, a browser window will open to authorize calendar access.
+Fill in your session cookies (`li_at` for LinkedIn, `auth_token` for X).
 
 ---
 
-## How to Run
+## 🛠️ Operating Workflows & Commands
 
-### Method A: Run Locally
+### Workflow 1: Launch Local LLM Server (Metal)
 
-1. **Install Dependencies & Playwright Browser**:
+In a dedicated terminal tab, start the optimized Metal server:
 ```bash
-pip install -r requirements.txt
-playwright install chromium
+./run_llm_server.sh
 ```
 
-2. **Test a Single URL (Direct Mode)**:
+*(Optional: to enable speculative decoding for ~2x faster token generation)*:
 ```bash
-python main.py --url "https://github.com/microsoft/autogen"
-```
-
-3. **Dry-Run Mode (No Files Written)**:
-```bash
-python main.py --url "https://habr.com/ru/articles/78910/" --dry-run
-```
-
-4. **Run Full Telegram Batch Scanner**:
-```bash
-# Scans Saved Messages from September 1, 2025:
-python main.py
-
-# Optional: specify custom start date or message limit:
-python main.py --since 2025-09-15 --limit 50
+ENABLE_DFLASH=true ./run_llm_server.sh
 ```
 
 ---
 
-### Method B: Run with Docker Compose
+### Workflow 2: Run Timed Ingestion Session
 
-1. Ensure Ollama is running on your host machine.
-2. Build and start the container:
+#### A. Standard Ingestion (Ingest from Today back to September 1, 2025):
 ```bash
-docker-compose up --build
+python run_timed_session.py --since 2025-09-01 --duration-minutes 60
 ```
-Your notes will automatically appear in your local `./vault` directory, categorized across the 20 taxonomy folders.
+
+#### B. Reprocess & Enrich Incomplete Notes:
+Scans notes in `vault/other/` or failed stubs, extracts full YouTube transcripts, runs them through the LLM, and relocates them to their proper taxonomy folders:
+```bash
+python run_timed_session.py --reprocess-failed
+```
+
+#### C. Force Reprocess All Messages:
+```bash
+python run_timed_session.py --since 2025-09-01 --reprocess --duration-minutes 60
+```
 
 ---
 
-## 20-Folder Taxonomy Guide
+### Workflow 3: Reorganize Vault & Generate NotebookLM Compendium
 
-| Folder | Definition |
-|---|---|
-| `research` | Academic papers, scientific studies, theoretical analysis |
-| `agents` | Autonomous AI systems, multi-agent frameworks, LLM orchestrators |
-| `workflows` | Business processes, automation sequences, pipeline architectures, CI/CD |
-| `ML` | Machine learning models, neural networks, fine-tuning, training |
-| `big_data` | Distributed data processing, Spark, Kafka, data lakes, ETL |
-| `trading` | Financial algorithms, quantitative analysis, crypto, economics |
-| `jobs` | Job postings, recruitment opportunities, vacancy specs |
-| `ideas` | Inventions, product concepts, brainstorming notes, startup ideas |
-| `resources` | Curated lists, cheatsheets, dataset links, public APIs |
-| `drafts` | Incomplete writings, work-in-progress blogs, rough notes |
-| `repositories` | Open source GitHub/GitLab repositories, code libraries |
-| `tools` | Developer utilities, software applications, SaaS products, CLI tools |
-| `rules` | Coding standards, linting rules, architectural constraints |
-| `policy` | Legal terms, governance guidelines, AI safety policies |
-| `cases` | Real-world case studies, industry post-mortems, incident reviews |
-| `issues` | Technical bugs, troubleshooting logs, known CVEs, defects |
-| `literature` | Books, essays, long-form journalism, philosophical pieces |
-| `hooks` | Event triggers, webhooks, integration callbacks, signals |
-| `hints` | Quick tips, shortcuts, performance hacks, hidden features |
-| `other` | Miscellaneous links, failed scrapes, login walls |
+To reorganize any unsorted notes across the 20 folders, synchronize the SQLite database, and generate the Master NotebookLM document:
+```bash
+python vault_organizer.py
+```
+
+Output:
+* **`vault/NOTEBOOKLM_KNOWLEDGE_BASE.md`** — Ready to drag-and-drop directly into Google NotebookLM!
 
 ---
 
-## Running Tests
+## 📁 Taxonomy Guide (20 Obsidian Folders)
 
-Run the complete test suite:
+| Folder | Name / Domain | Description & Content Type |
+|---|---|---|
+| `/agents` | **AI Agents & Multi-Agent Systems** | LangGraph, CrewAI, AutoGen, AgentMemory, Roo Code, Claude Code subagents. |
+| `/ML` | **Machine Learning & LLM Core** | Quantization (GGUF, AWQ), model architectures, RAG libraries, fine-tuning, embeddings. |
+| `/workflows` | **Quality Engineering & Pipelines** | AI test automation, testing pyramids, CI/CD pipelines, Git commit best practices. |
+| `/cases` | **Enterprise AI Case Studies** | Real-world industry implementations (Netflix AI Engineering, Silpo AI Factory, Svoi.ru). |
+| `/research` | **Academic & Scientific Papers** | ArXiv research, empirical benchmarks, frontier model studies, methodology analyses. |
+| `/tools` | **Developer Tooling & Utilities** | VS Code extensions, TOON format, desktop utilities, image/video AI tools. |
+| `/trading` | **Financial Markets & Trading** | Futures trading, Smart Money Concepts, Order Blocks, Bybit, Prop firm analysis. |
+| `/hints` | **Technical Cheat Sheets & Tips** | SQL & PostgreSQL recipes, database optimizations, QA interview question banks. |
+| `/literature` | **Tutorials, Books & Courses** | 30 Days of Python, programming textbooks, EPAM testing courses, comprehensive guides. |
+| `/repositories` | **Open-Source Codebases** | Curated GitHub repositories, frameworks, and reference implementations. |
+| `/issues` | **Security Research & Bug Bounty** | Penetration testing, vulnerability analyses, exploit write-ups, security audits. |
+| `/jobs` | **Career & Job Opportunities** | Vacancy specifications, hiring pitches, compensation packages, role requirements. |
+| `/ideas` | **Product & Startup Concepts** | AI business ideas, product architectures, hackathon proposals. |
+| `/resources` | **External Platforms & Portals** | Developer portals, documentation hubs, reference sites. |
+| `/drafts` | **WIP Notes & Sketches** | Incomplete thoughts, early draft notes. |
+| `/rules` | **Engineering Standards & Lints** | Style guides, coding conventions, architectural invariants. |
+| `/policy` | **Governance & Compliance** | Data protection policies, security guidelines, terms of service. |
+| `/big_data` | **Data Engineering & Big Data** | Spark, Kafka, ETL pipelines, large-scale data warehouses. |
+| `/hooks` | **Event Triggers & Webhooks** | System webhooks, automation triggers, event listeners. |
+| `/other` | **Miscellaneous Notes** | General knowledge items not fitting other specific categories. |
+
+---
+
+## 🧪 Testing & Quality Assurance
+
+Run the comprehensive test suite with `pytest`:
 ```bash
 pytest -v
 ```
-All unit and integration tests verify Smart Overwrite path resolution, scraping integrity, AI triage, and Google Calendar event formatting.
+
+**Test Coverage**:
+* `test_youtube_and_arxiv_scrapers.py`: Validates speech-to-text transcript fetching, audio cleaning, and ArXiv XML parsing.
+* `test_timed_session.py`: Validates SQLite checkpointing, skip logic, and session summaries.
+* `test_database.py`: Validates CRUD operations, Smart Overwrite, and vault path resolution.
+* `test_ai_engine.py`: Validates JSON schema formatting, taxonomy routing, and fallback chains.
+* `test_scraper.py`: Validates PixelRAG visual screenshot tiling, DOM clutter stripping, and anti-login wall checks.
+* `test_utils.py`: Validates acoustic noise cleaning, promo filtering, and sanitized cross-platform filenames.
+
+---
+
+## 🔒 Privacy & Security
+
+* **100% Local Inference**: When using `Muse-Glimmer-30B` on Metal, no text, transcripts, or personal messages leave your machine.
+* **Credentials Protection**: All `.env` files, `.session` tokens, and `cookies.json` are excluded from version control via `.gitignore`.
+
+---
+
+## 📄 License
+MIT License. Created for autonomous Personal Intelligence Engineering.

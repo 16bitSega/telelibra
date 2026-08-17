@@ -24,29 +24,66 @@ wheels/
 .installed.cfg
 *.egg
 
-# Virtual environments
-venv/
-.venv/
-ENV/
-env/
+# Environment variables & secrets
+.env
+*.env
+.env.*
+!.env.example
+credentials.json
+token.json
+cookies.json
+*.session
+*.session-journal
+
+# Logs & diagnostic markdown files
+*.log
+logs_*.md
+logs/
+
+# Local SQLite databases & Vault runtime
+processed_links.db
+*.db
+*.sqlite
+*.sqlite3
+*.db-journal
+*.db-wal
+*.db-shm
+data/
+vault/
+!vault/.gitkeep
 
 # Pytest / coverage
 .pytest_cache/
 .coverage
 htmlcov/
 
-# Environment variables & secrets
-.env
-*.env
-credentials.json
-token.json
-*.session
-*.session-journal
+# Virtual environments
+venv/
+.venv/
+ENV/
+env/
 
-# Local SQLite databases & Vault runtime
-processed_links.db
-data/
-vault/
+# Python caches & build artifacts
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
 
 # OS specific files
 .DS_Store

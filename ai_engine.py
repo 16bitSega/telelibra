@@ -114,7 +114,16 @@ class AILibrarian:
     """Multimodal Triage Engine supporting Self-Hosted Vision Models (Ollama, vLLM) & OpenAI."""
 
     def __init__(self, **kwargs: Any) -> None:
-        self.use_openai: bool = kwargs.get("use_openai", settings.use_openai)
+        self.vision_provider: str = kwargs.get("vision_provider", settings.vision_provider)
+        self.llm_provider: str = kwargs.get(
+            "llm_provider",
+            self.vision_provider if "vision_provider" in kwargs else settings.llm_provider
+        )
+        self.llamacpp_url: str = kwargs.get("llamacpp_base_url", settings.llamacpp_base_url)
+        self.llamacpp_model: str = kwargs.get("llamacpp_model_name", settings.llamacpp_model_name)
+        self.reasoning_effort: str = kwargs.get("reasoning_effort", settings.reasoning_effort)
+
+        self.use_openai: bool = kwargs.get("use_openai", settings.use_openai) or self.llm_provider == "openai"
         self.openai_key: str = kwargs.get("openai_api_key", settings.openai_api_key)
         self.openai_model: str = kwargs.get("openai_model", settings.openai_model)
         self.ollama_url: str = kwargs.get("ollama_base_url", settings.ollama_base_url)
@@ -122,7 +131,6 @@ class AILibrarian:
 
         # Vision model properties
         self.vision_enabled: bool = kwargs.get("vision_enabled", settings.vision_enabled)
-        self.vision_provider: str = kwargs.get("vision_provider", settings.vision_provider)
         self.vision_model: str = kwargs.get("vision_model", settings.vision_model)
         self.vision_base_url: str = kwargs.get("vision_base_url", settings.vision_base_url)
 
@@ -143,27 +151,45 @@ class AILibrarian:
         taxonomy_block = "\n".join(taxonomy_lines)
 
         return f"""You are the AI Librarian for a Personal Intelligence ETL pipeline.
-Your job is to analyze web content and visual document screenshots, triage into either "Job Opportunity" or "Knowledge", categorize into exactly ONE of the 20 taxonomy folders, and produce a structured analysis.
+Your job is to deeply analyze web content, transcripts, and document screenshots, triage into either "Job Opportunity" or "Knowledge", categorize into exactly ONE of the 20 taxonomy folders, and produce a high-value structured analysis.
 
 ### FOLDER TAXONOMY (Choose EXACTLY ONE):
 {taxonomy_block}
 
-### RULES:
-1. **Job Triage**: If the content is from linkedin.com/jobs, is a job posting, recruitment pitch, or vacancy specification, set category to "jobs" and type to "job".
-2. **Knowledge Triage**: Otherwise, categorize into the single best matching folder from the 20 taxonomy options above, and set type to "knowledge".
-3. **Visual & Multimodal Reasoning**: If screenshot images are provided, carefully examine diagrams, architecture flowcharts, infographics, tables, and UI screenshots. Incorporate visual facts, numbers, and system components into your Summary and Key Insights.
-4. **Russian & Foreign Language Translation**: If the source text or images are in Russian or any non-English language (e.g. Habr articles), your AI Summary, Key Insights, and Tags MUST BE TRANSLATED INTO ENGLISH. The Title should also be in English.
-5. **Code Snippets**: Extract important code, command-line snippets, or configuration samples into code_snippets.
-6. **Output Format**: Respond ONLY with a valid JSON object matching the requested schema. No markdown wrapping around JSON or conversational text.
+### RULES FOR HIGH-VALUE EXTRACTION & SIGNAL FILTERING:
+1. **Job Triage**: If the content is from linkedin.com/jobs, is a job vacancy, hiring pitch, or role description, set category to "jobs" and type to "job".
+2. **Knowledge Triage**: Categorize into the single best matching folder from the 20 taxonomy options above, and set type to "knowledge".
+3. **Aggressive Noise & Fluff Filtering**:
+   - Completely ignore channel self-promotions, sponsorship spots, Patreon links, like/subscribe/bell calls, discount codes, and repetitive speaker acoustic sounds ([music], [snorts], coughing, stutters).
+   - Filter out social chatter, Telegram channel ad bots (e.g. "з питань реклами", "підписуйтесь на канал"), and navigation boilerplate.
+   - Focus 100% of your output on substantive technical depth, architecture mechanisms, algorithmic trade-offs, benchmarks, and concrete conclusions.
+4. **Podcasts & Video Transcripts**:
+   - Provide a comprehensive, high-signal 3-4 paragraph Executive Summary detailing the core topics, technical problems discussed, speaker arguments, and practical conclusions.
+   - Extract 5-7 concrete, actionable Key Insights with technical specifics, frameworks, benchmarks, or architectures mentioned.
+   - Never output generic placeholder text like "Summary generated from visual analysis".
+5. **Research Papers & Technical Articles**:
+   - Detail the core research problem, methodology, architectural innovations, dataset/benchmarks, and key takeaways.
+6. **Multilingual Intelligence & Language Nuance**:
+   - If the source is in Ukrainian, Russian, German, or another non-English language, produce the Title, Executive Summary, Key Insights, and Tags in clear, idiomatic English for unified search and NotebookLM synthesis.
+   - Retain domain-specific terms and context from the original language without over-simplification.
+   - Note: The full original source text in its native language is preserved intact in the note's Original Source section.
+7. **Code Snippets & Architecture**: Extract important code, CLI commands, or YAML/JSON snippets into code_snippets if present.
+8. **Output Format**: Respond ONLY with a valid JSON object matching the requested schema. No conversational preamble or trailing text.
 
 ### JSON Output Schema:
 {{
   "title": "Clean descriptive title in English",
   "category": "one_of_the_20_folders",
   "type": "knowledge" | "job",
-  "summary": "Concise 2-4 paragraph executive summary in English",
-  "insights": ["Key insight 1 in English", "Key insight 2 in English", "Key insight 3 in English"],
-  "tags": ["tag1", "tag2", "tag3"],
+  "summary": "Detailed 3-4 paragraph executive summary in English",
+  "insights": [
+    "Concrete technical insight 1",
+    "Concrete technical insight 2",
+    "Concrete technical insight 3",
+    "Concrete technical insight 4",
+    "Concrete technical insight 5"
+  ],
+  "tags": ["tag1", "tag2", "tag3", "tag4"],
   "code_snippets": ["code block 1 (optional)"]
 }}
 """
@@ -279,6 +305,45 @@ Your job is to analyze web content and visual document screenshots, triage into 
             data = resp.json()
             return data["choices"][0]["message"]["content"]
 
+    @retry(max_retries=2, backoff=2.0, exceptions=(httpx.HTTPError, OSError))
+    def _call_llamacpp(
+        self,
+        prompt: str,
+        system_prompt: str,
+        tiles: List[VisualTile],
+        **kwargs: Any,
+    ) -> str:
+        """Call Muse-Glimmer-30B on llama.cpp server with Metal acceleration & mmproj vision."""
+        base_url = self.llamacpp_url.rstrip("/")
+        url = f"{base_url}/chat/completions" if not base_url.endswith("/chat/completions") else base_url
+        if not url.endswith("/chat/completions"):
+            url = f"{url}/v1/chat/completions"
+
+        user_content: List[Dict[str, Any]] = [{"type": "text", "text": prompt}]
+
+        for tile in tiles[:3]:
+            b64 = self._encode_image_b64(tile.path)
+            if b64:
+                user_content.append({
+                    "type": "image_url",
+                    "image_url": {"url": f"data:image/jpeg;base64,{b64}"},
+                })
+
+        payload = {
+            "model": self.llamacpp_model,
+            "messages": [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_content},
+            ],
+            "temperature": 0.2,
+            "response_format": {"type": "json_object"},
+        }
+        with httpx.Client(timeout=300.0) as client:
+            resp = client.post(url, json=payload)
+            resp.raise_for_status()
+            data = resp.json()
+            return data["choices"][0]["message"]["content"]
+
     def _parse_llm_json(self, raw_response: str) -> Dict[str, Any]:
         """Safely parse JSON response from LLM."""
         cleaned = raw_response.strip()
@@ -344,20 +409,32 @@ CONTENT TO ANALYZE:
 """
 
         raw_llm_output = ""
+        # 1. Primary Attempt
         try:
-            # Route based on provider preference & visual availability
-            if self.use_openai and self.openai_key:
+            if self.llm_provider == "llamacpp":
+                logger.info("Processing with Muse-Glimmer-30B on llama.cpp (%s, visuals=%s) for %s", self.llamacpp_model, scraped.has_visuals, scraped.url)
+                raw_llm_output = self._call_llamacpp(user_prompt, system_prompt, scraped.visual_tiles, **kwargs)
+            elif self.use_openai and self.openai_key:
                 logger.info("Processing with OpenAI (%s, visuals=%s) for %s", self.openai_model, scraped.has_visuals, scraped.url)
                 raw_llm_output = self._call_openai_vision(user_prompt, system_prompt, scraped.visual_tiles, **kwargs)
             elif self.vision_provider == "vllm":
                 logger.info("Processing with local vLLM endpoint (%s) for %s", self.vision_model, scraped.url)
                 raw_llm_output = self._call_vllm_vision(user_prompt, system_prompt, scraped.visual_tiles, **kwargs)
             else:
-                # Default: Ollama (vision-enabled if tiles exist)
                 logger.info("Processing with Ollama (%s, visuals=%s) for %s", self.vision_model if scraped.has_visuals else self.ollama_model, scraped.has_visuals, scraped.url)
                 raw_llm_output = self._call_ollama_vision(user_prompt, system_prompt, scraped.visual_tiles, **kwargs)
-        except Exception as e:
-            logger.error("LLM processing encountered error: %s. Falling back to default triage.", e)
+        except Exception as primary_err:
+            logger.warning("Primary provider (%s) notice: %s. Attempting fallback...", self.llm_provider, primary_err)
+            # 2. Fallback Attempt
+            try:
+                if self.use_openai and self.openai_key and self.llm_provider != "openai":
+                    logger.info("Fallback: routing to OpenAI (%s) for %s", self.openai_model, scraped.url)
+                    raw_llm_output = self._call_openai_vision(user_prompt, system_prompt, scraped.visual_tiles, **kwargs)
+                elif self.llm_provider != "ollama":
+                    logger.info("Fallback: routing to local Ollama for %s", scraped.url)
+                    raw_llm_output = self._call_ollama_vision(user_prompt, system_prompt, scraped.visual_tiles, **kwargs)
+            except Exception as fallback_err:
+                logger.error("All LLM providers failed for %s: %s", scraped.url, fallback_err)
 
         parsed = self._parse_llm_json(raw_llm_output) if raw_llm_output else {}
 

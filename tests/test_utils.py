@@ -1,8 +1,10 @@
-"""
-Unit tests for utils.py functions and decorators.
-"""
-
-from utils import extract_urls, measure_performance, sanitize_filename
+from utils import (
+    clean_promo_noise,
+    clean_transcript_text,
+    extract_urls,
+    measure_performance,
+    sanitize_filename,
+)
 
 
 def test_sanitize_filename():
@@ -30,3 +32,23 @@ def test_measure_performance_decorator():
         return x * 2
 
     assert sample_func(5) == 10
+
+
+def test_clean_transcript_text():
+    raw = "[snorts] [music] >> Hello world! This is a a test. [applause] >> We discuss AI."
+    cleaned = clean_transcript_text(raw)
+    assert "[snorts]" not in cleaned
+    assert "[music]" not in cleaned
+    assert "[applause]" not in cleaned
+    assert ">>" not in cleaned
+    assert "a a" not in cleaned
+    assert "Hello world! This is a test. We discuss AI." in cleaned
+
+
+def test_clean_promo_noise():
+    raw = "Here is the architectural review. З питань реклами: @promo_bot. Don't forget to like and subscribe! Final conclusions."
+    cleaned = clean_promo_noise(raw)
+    assert "@promo_bot" not in cleaned
+    assert "like and subscribe" not in cleaned
+    assert "Here is the architectural review." in cleaned
+    assert "Final conclusions." in cleaned
