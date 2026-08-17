@@ -29,7 +29,7 @@ DFLASH_MODEL="${DFLASH_MODEL:-$MODEL_DIR/dflash-kquant.gguf}"
 CONTEXT_SIZE="${CONTEXT_SIZE:-16384}"
 SLOTS="${SLOTS:-1}"
 PORT="${PORT:-8080}"
-HOST="${HOST:-0.0.0.0}"
+HOST="${HOST:-127.0.0.1}"
 
 echo "========================================================================"
 echo "🧠 LAUNCHING MUSE-GLIMMER-30B ON METAL (llama.cpp)"

@@ -30,22 +30,34 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Test Self-Hosted Vision Models with Librarian AI / PixelRAG")
     parser.add_argument("--url", type=str, help="Web URL to screenshot and visually analyze")
     parser.add_argument("--image", type=str, help="Path to local image/diagram to test directly")
-    parser.add_argument("--provider", type=str, default="ollama", choices=["ollama", "vllm", "openai"], help="Vision provider")
-    parser.add_argument("--model", type=str, default="llama3.2-vision", help="Model name (e.g. llama3.2-vision, qwen2.5-vl, gpt-4o)")
-    parser.add_argument("--base-url", type=str, default="http://localhost:11434", help="Base URL for Ollama or vLLM endpoint")
+    parser.add_argument("--provider", type=str, default="ollama", choices=["ollama", "llamacpp", "vllm", "openai"], help="Vision provider")
+    parser.add_argument("--model", type=str, default=None, help="Model name (e.g. Muse-Glimmer-30B, llama3.2-vision, qwen2.5-vl, gpt-4o)")
+    parser.add_argument("--base-url", type=str, default=None, help="Base URL for provider endpoint")
     args = parser.parse_args()
 
     if not args.url and not args.image:
         print("Please specify either --url or --image to test. Use --help for options.")
         sys.exit(1)
 
-    logger.info("Initializing Vision Librarian (Provider=%s, Model=%s, Endpoint=%s)", args.provider, args.model, args.base_url)
+    # Resolve default base URL based on provider if not explicitly passed
+    default_urls = {
+        "ollama": "http://localhost:11434",
+        "llamacpp": "http://localhost:8080/v1",
+        "vllm": "http://localhost:8000/v1",
+        "openai": "https://api.openai.com/v1",
+    }
+    base_url = args.base_url or default_urls.get(args.provider, "http://localhost:11434")
+    model_name = args.model or ("Muse-Glimmer-30B" if args.provider == "llamacpp" else "llama3.2-vision" if args.provider == "ollama" else "gpt-4o")
+
+    logger.info("Initializing Vision Librarian (Provider=%s, Model=%s, Endpoint=%s)", args.provider, model_name, base_url)
     
     librarian = AILibrarian(
         vision_enabled=True,
         vision_provider=args.provider,
-        vision_model=args.model,
-        vision_base_url=args.base_url,
+        llm_provider=args.provider,
+        vision_model=model_name,
+        vision_base_url=base_url,
+        llamacpp_base_url=base_url,
         use_openai=(args.provider == "openai"),
     )
 
