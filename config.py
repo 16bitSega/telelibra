@@ -6,7 +6,19 @@ Manages environment variables, default constants, and the 20-folder taxonomy gui
 from datetime import datetime, timezone
 import os
 from pathlib import Path
+import re
 from typing import Any, Dict, List
+
+try:
+    from dotenv import load_dotenv
+    # Load .env from current project directory
+    env_file = Path(__file__).parent / ".env"
+    if env_file.exists():
+        load_dotenv(dotenv_path=env_file, override=True)
+    else:
+        load_dotenv(override=True)
+except ImportError:
+    pass
 
 
 class Settings:
@@ -14,10 +26,14 @@ class Settings:
 
     def __init__(self, **kwargs: Any) -> None:
         # Telegram Settings
-        self.telegram_api_id: int = int(os.getenv("TELEGRAM_API_ID", "0"))
-        self.telegram_api_hash: str = os.getenv("TELEGRAM_API_HASH", "")
-        self.telegram_phone: str = os.getenv("TELEGRAM_PHONE", "")
-        self.telegram_session_name: str = os.getenv("TELEGRAM_SESSION_NAME", "librarian_telegram")
+        raw_api_id = os.getenv("TELEGRAM_API_ID", "").strip().strip("'\"")
+        try:
+            self.telegram_api_id: int = int(raw_api_id) if raw_api_id else 0
+        except ValueError:
+            self.telegram_api_id = 0
+        self.telegram_api_hash: str = os.getenv("TELEGRAM_API_HASH", "").strip().strip("'\"")
+        self.telegram_phone: str = os.getenv("TELEGRAM_PHONE", "").strip().strip("'\"")
+        self.telegram_session_name: str = os.getenv("TELEGRAM_SESSION_NAME", "librarian_telegram").strip().strip("'\"")
 
         # Ingestion Filter Cutoff (September 1, 2025)
         self.ingestion_start_date: datetime = datetime(2025, 9, 1, 0, 0, 0, tzinfo=timezone.utc)
@@ -27,36 +43,23 @@ class Settings:
         self.obsidian_vault_path: Path = Path(os.getenv("OBSIDIAN_VAULT_PATH", "./vault")).resolve()
         self.cookies_path: Path = Path(os.getenv("COOKIES_PATH", "cookies.json")).resolve()
 
-        # AI Engine Provider Settings
-        # Providers: 'llamacpp' (Muse-Glimmer-30B), 'ollama', 'openai', 'vllm'
-        self.llm_provider: str = os.getenv("LLM_PROVIDER", "llamacpp").lower()
-        self.use_openai: bool = os.getenv("USE_OPENAI", "false").lower() in ("true", "1", "yes")
+        # AI Engine Settings
+        self.llm_provider: str = os.getenv("LLM_PROVIDER", "llamacpp" if not os.getenv("USE_OPENAI", "false").lower() in ("true", "1", "yes") else "openai").lower()
+        self.llamacpp_base_url: str = os.getenv("LLAMACPP_BASE_URL", "http://localhost:8080/v1")
+        self.llamacpp_model_name: str = os.getenv("LLAMACPP_MODEL_NAME", "Muse-Glimmer-30B")
+        self.reasoning_effort: str = os.getenv("REASONING_EFFORT", "high")
+
+        self.use_openai: bool = os.getenv("USE_OPENAI", "false").lower() in ("true", "1", "yes") or self.llm_provider == "openai"
         self.openai_api_key: str = os.getenv("OPENAI_API_KEY", "")
         self.openai_model: str = os.getenv("OPENAI_MODEL", "gpt-4o")
         self.ollama_base_url: str = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
         self.ollama_model: str = os.getenv("OLLAMA_MODEL", "llama3:8b")
 
-        # Muse-Glimmer-30B / llama.cpp Server Settings
-        self.llamacpp_base_url: str = os.getenv("LLAMACPP_BASE_URL", "http://localhost:8080/v1")
-        self.llamacpp_model_name: str = os.getenv("LLAMACPP_MODEL_NAME", "Muse-Glimmer-30B")
-        self.llamacpp_model_path: Path = Path(
-            os.getenv("LLAMACPP_MODEL_PATH", "llama/runtime/models/Muse-Glimmer-30B/muse-glimmer-30B-kquant-17gb.gguf")
-        )
-        self.llamacpp_mmproj_path: Path = Path(
-            os.getenv("LLAMACPP_MMPROJ_PATH", "llama/runtime/models/Muse-Glimmer-30B/mmproj-kquant.gguf")
-        )
-        self.llamacpp_draft_path: Path = Path(
-            os.getenv("LLAMACPP_DRAFT_PATH", "llama/runtime/models/Muse-Glimmer-30B/dflash-kquant.gguf")
-        )
-        self.llamacpp_context_size: int = int(os.getenv("LLAMACPP_CONTEXT_SIZE", "32768"))
-        self.llamacpp_slots: int = int(os.getenv("LLAMACPP_SLOTS", "1"))
-        self.reasoning_effort: str = os.getenv("REASONING_EFFORT", "high").lower()  # low, medium, high, xhigh
-
         # Vision Model Settings (Self-Hosted / Cloud)
         self.vision_enabled: bool = os.getenv("VISION_ENABLED", "true").lower() in ("true", "1", "yes")
-        self.vision_provider: str = os.getenv("VISION_PROVIDER", "llamacpp").lower()  # 'llamacpp', 'ollama', 'vllm', 'openai'
-        self.vision_model: str = os.getenv("VISION_MODEL", "Muse-Glimmer-30B")
-        self.vision_base_url: str = os.getenv("VISION_BASE_URL", "http://localhost:8080/v1")
+        self.vision_provider: str = os.getenv("VISION_PROVIDER", self.llm_provider).lower()
+        self.vision_model: str = os.getenv("VISION_MODEL", self.llamacpp_model_name if self.vision_provider == "llamacpp" else "llama3.2-vision")
+        self.vision_base_url: str = os.getenv("VISION_BASE_URL", self.llamacpp_base_url if self.vision_provider == "llamacpp" else "http://localhost:11434")
         self.tile_height: int = int(os.getenv("TILE_HEIGHT", "1568"))  # PixelRAG optimal tile height
         self.attachments_path: Path = (self.obsidian_vault_path / "attachments").resolve()
 

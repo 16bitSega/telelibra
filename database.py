@@ -84,6 +84,15 @@ class DatabaseManager:
                 """
             )
             conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS checkpoints (
+                    key TEXT PRIMARY KEY,
+                    value TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
+                """
+            )
+            conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_category ON processed_links(category);"
             )
             conn.execute(
@@ -190,6 +199,48 @@ class DatabaseManager:
             processed_at=processed_at,
             content_hash=content_hash,
         )
+
+    def set_checkpoint(self, key: str, value: str, **kwargs: Any) -> None:
+        """Store or update a checkpoint state in SQLite."""
+        now = datetime.now(timezone.utc).isoformat()
+        with self.get_connection() as conn:
+            conn.execute(
+                """
+                INSERT INTO checkpoints (key, value, updated_at)
+                VALUES (?, ?, ?)
+                ON CONFLICT(key) DO UPDATE SET
+                    value = excluded.value,
+                    updated_at = excluded.updated_at;
+                """,
+                (key, str(value), now),
+            )
+
+    def get_checkpoint(self, key: str, **kwargs: Any) -> Optional[str]:
+        """Retrieve stored checkpoint value by key."""
+        with self.get_connection() as conn:
+            cursor = conn.execute("SELECT value FROM checkpoints WHERE key = ?", (key,))
+            row = cursor.fetchone()
+            return str(row["value"]) if row else None
+
+    def get_summary_stats(self, **kwargs: Any) -> Dict[str, Any]:
+        """Return breakdown of processed URLs, categories, and jobs."""
+        with self.get_connection() as conn:
+            total_cursor = conn.execute("SELECT COUNT(*) FROM processed_links")
+            total = total_cursor.fetchone()[0]
+
+            jobs_cursor = conn.execute("SELECT COUNT(*) FROM processed_links WHERE item_type = 'job'")
+            jobs_count = jobs_cursor.fetchone()[0]
+
+            cat_cursor = conn.execute(
+                "SELECT category, COUNT(*) as cnt FROM processed_links GROUP BY category ORDER BY cnt DESC"
+            )
+            categories = {row["category"]: row["cnt"] for row in cat_cursor}
+
+            return {
+                "total_processed": total,
+                "jobs_count": jobs_count,
+                "categories": categories,
+            }
 
     def iter_vault_markdown_files(
         self,

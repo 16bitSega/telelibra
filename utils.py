@@ -111,3 +111,57 @@ def extract_urls(text: Optional[str], **kwargs: Any) -> Generator[str, None, Non
         if url not in seen:
             seen.add(url)
             yield url
+
+
+def clean_transcript_text(text: str, **kwargs: Any) -> str:
+    """
+    Cleans spoken transcripts of speaker noise, stutters, and sound effects:
+    - Strips [music], [applause], [snorts], [laughter], [coughing], >>, etc.
+    - Removes consecutive stutter word repetitions.
+    - Preserves all real speech in original language (Ukrainian, English, etc.).
+    """
+    if not text:
+        return ""
+
+    # 1. Remove bracketed acoustic/sound annotations
+    sound_pattern = re.compile(
+        r"\[(?:music|applause|laughter|snorts|cheering|coughing|throat clearing|screaming|sighs|inaudible|silence|whispering|groans|crying|gasping|chuckle)[^\]]*\]",
+        re.IGNORECASE,
+    )
+    cleaned = sound_pattern.sub(" ", text)
+
+    # 2. Remove speaker turn indicators (>> or > >)
+    cleaned = re.sub(r">\s*>\s*", " ", cleaned)
+
+    # 3. Clean duplicate stutter words (e.g. "and and and" -> "and", "the the" -> "the")
+    cleaned = re.sub(r"\b([a-zA-Zа-яА-ЯіїєґІЇЄҐ]+)(?:\s+\1\b)+", r"\1", cleaned, flags=re.IGNORECASE)
+
+    # 4. Normalize excessive whitespace
+    cleaned = re.sub(r"[ \t]+", " ", cleaned)
+    cleaned = re.sub(r"\n\s*\n+", "\n\n", cleaned)
+    return cleaned.strip()
+
+
+def clean_promo_noise(text: str, **kwargs: Any) -> str:
+    """
+    Strips social media boilerplate, advertising prompts, and sponsor clutter:
+    - Removes 'like and subscribe', 'link in description', 'з питань реклами', etc.
+    - Preserves all substantive content in the source language.
+    """
+    if not text:
+        return ""
+
+    promo_patterns = [
+        re.compile(r"(?:з\s+питань\s+реклами|по\s+вопросам\s+рекламы|for\s+sponsorships?)\s*[:@-]?\s*\S+", re.IGNORECASE),
+        re.compile(r"(?:підписуйтесь|подписывайтесь|subscribe\s+to|follow\s+us\s+on)\s+(?:на\s+)?(?:наш\s+)?(?:канал|telegram|телеграм|youtube|channel|twitter|x\.com)\S*", re.IGNORECASE),
+        re.compile(r"(?:don't\s+forget\s+to\s+like|leave\s+a\s+like|hit\s+the\s+bell|ставьте\s+лайки?|тисніть\s+дзвіночок)[^.!?\n]*[.!?\n]?", re.IGNORECASE),
+        re.compile(r"(?:link\s+in\s+(?:the\s+)?description|посилання\s+в\s+описі|ссылка\s+в\s+описании)[^.!?\n]*[.!?\n]?", re.IGNORECASE),
+    ]
+
+    cleaned = text
+    for pat in promo_patterns:
+        cleaned = pat.sub("", cleaned)
+
+    cleaned = re.sub(r"[ \t]+", " ", cleaned)
+    cleaned = re.sub(r"\n\s*\n+", "\n\n", cleaned)
+    return cleaned.strip()

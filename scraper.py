@@ -4,6 +4,7 @@ Handles multi-source extraction (Playwright with DOM clutter stripping, 1568px s
 GitHub raw README conversion, Trafilatura for web) and multimodal visual asset preservation.
 """
 
+from concurrent.futures import ThreadPoolExecutor
 from io import BytesIO
 import json
 import logging
@@ -33,7 +34,14 @@ except ImportError:
     trafilatura = None  # type: ignore[assignment]
 
 from config import settings
-from utils import log_execution, measure_performance, retry, sanitize_filename
+from utils import (
+    clean_promo_noise,
+    clean_transcript_text,
+    log_execution,
+    measure_performance,
+    retry,
+    sanitize_filename,
+)
 
 logger = logging.getLogger("librarian.scraper")
 
@@ -280,98 +288,105 @@ class ScraperEngine:
         text_content = ""
         page_title = f"{source_type.capitalize()} Document"
         visual_tiles: List[VisualTile] = []
-        is_failed = False
-        failure_reason = None
-
         slug = sanitize_filename(urlparse(url).path.replace("/", "_") or "page", max_length=30)
         timestamp = int(urlparse(url).netloc.__hash__() % 100000)
 
-        try:
-            with sync_playwright() as p:
-                browser = p.chromium.launch(
-                    headless=self.headless,
-                    args=["--no-sandbox", "--disable-setuid-sandbox", "--disable-dev-shm-usage"],
-                )
-                context = browser.new_context(
-                    user_agent=(
-                        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
-                        "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
-                    ),
-                    viewport={"width": 1280, "height": 800},
-                )
+        def _playwright_worker() -> Tuple[str, str, List[VisualTile], bool, Optional[str]]:
+            worker_title = page_title
+            worker_text = ""
+            worker_tiles: List[VisualTile] = []
+            worker_failed = False
+            worker_reason = None
 
-                if cookies:
-                    relevant_cookies = [
-                        c for c in cookies
-                        if domain in c.get("domain", "") or "." + domain in c.get("domain", "")
-                    ]
-                    if relevant_cookies:
-                        try:
-                            context.add_cookies(relevant_cookies)
-                        except Exception as e:
-                            logger.warning("Cookie injection notice: %s", e)
-
-                page = context.new_page()
-                page.set_default_timeout(self.timeout_ms)
-
-                page.goto(url, wait_until="domcontentloaded")
-                # Wait for network idle and dynamic components
-                try:
-                    page.wait_for_load_state("networkidle", timeout=5000)
-                except Exception:
-                    pass
-
-                # Scroll twice to load full threads/comments
-                for _ in range(2):
-                    page.evaluate("window.scrollBy(0, window.innerHeight * 1.2)")
-                    page.wait_for_timeout(1000)
-
-                # Strip DOM clutter and fixed overlays
-                self.strip_dom_clutter(page)
-
-                page_title = page.title() or page_title
-
-                # Extract text if present
-                if "x.com" in url or "twitter.com" in url:
-                    elements = page.query_selector_all('[data-testid="tweetText"], article')
-                    if elements:
-                        texts = [el.inner_text().strip() for el in elements if el.inner_text().strip()]
-                        text_content = "\n\n---\n\n".join(texts)
-                elif "linkedin.com" in url:
-                    elements = page.query_selector_all(
-                        ".feed-shared-update-v2__description, .update-components-text, .jobs-description, article"
+            try:
+                with sync_playwright() as p:
+                    browser = p.chromium.launch(
+                        headless=self.headless,
+                        args=["--no-sandbox", "--disable-setuid-sandbox", "--disable-dev-shm-usage"],
                     )
-                    if elements:
-                        texts = [el.inner_text().strip() for el in elements if el.inner_text().strip()]
-                        text_content = "\n\n".join(texts)
+                    context = browser.new_context(
+                        user_agent=(
+                            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+                            "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+                        ),
+                        viewport={"width": 1280, "height": 800},
+                    )
 
-                if not text_content:
-                    text_content = page.inner_text("body")
+                    if cookies:
+                        relevant_cookies = [
+                            c for c in cookies
+                            if domain in c.get("domain", "") or "." + domain in c.get("domain", "")
+                        ]
+                        if relevant_cookies:
+                            try:
+                                context.add_cookies(relevant_cookies)
+                            except Exception as e:
+                                logger.warning("Cookie injection notice: %s", e)
 
-                # Check if visual capture is needed (forced, or text is short / image-heavy post)
-                is_short_or_visual = len(text_content.strip()) < 250 or force_visual
+                    page = context.new_page()
+                    page.set_default_timeout(self.timeout_ms)
 
-                if is_short_or_visual or settings.vision_enabled:
-                    logger.info("Generating visual screenshot tiles for %s...", url)
-                    screenshot_bytes = page.screenshot(full_page=True, type="jpeg", quality=90)
-                    
-                    # Generate 1568px high screenshot tiles
-                    for idx, tile_bytes, w, h in self.iter_image_tiles(screenshot_bytes, tile_height=self.tile_height):
-                        # Cap at maximum 5 tiles per page to prevent context explosion
-                        if idx >= 5:
-                            break
-                        tile_filename = f"{slug}_{timestamp}_tile_{idx:02d}.jpg"
-                        tile_filepath = self.attachments_path / tile_filename
-                        with open(tile_filepath, "wb") as f:
-                            f.write(tile_bytes)
-                        visual_tiles.append(VisualTile(path=tile_filepath, index=idx, width=w, height=h))
+                    page.goto(url, wait_until="domcontentloaded")
+                    # Wait for network idle and dynamic components
+                    try:
+                        page.wait_for_load_state("networkidle", timeout=5000)
+                    except Exception:
+                        pass
 
-                browser.close()
+                    # Scroll twice to load full threads/comments
+                    for _ in range(2):
+                        page.evaluate("window.scrollBy(0, window.innerHeight * 1.2)")
+                        page.wait_for_timeout(1000)
 
-        except Exception as e:
-            logger.error("Visual capture failed for %s: %s", url, e)
-            is_failed = True
-            failure_reason = f"Playwright error: {str(e)}"
+                    # Strip DOM clutter and fixed overlays
+                    self.strip_dom_clutter(page)
+
+                    worker_title = page.title() or worker_title
+
+                    # Extract text if present
+                    if "x.com" in url or "twitter.com" in url:
+                        elements = page.query_selector_all('[data-testid="tweetText"], article')
+                        if elements:
+                            texts = [el.inner_text().strip() for el in elements if el.inner_text().strip()]
+                            worker_text = "\n\n---\n\n".join(texts)
+                    elif "linkedin.com" in url:
+                        elements = page.query_selector_all(
+                            ".feed-shared-update-v2__description, .update-components-text, .jobs-description, article"
+                        )
+                        if elements:
+                            texts = [el.inner_text().strip() for el in elements if el.inner_text().strip()]
+                            worker_text = "\n\n".join(texts)
+
+                    if not worker_text:
+                        worker_text = page.inner_text("body")
+
+                    # Check if visual capture is needed (forced, or text is short / image-heavy post)
+                    is_short_or_visual = len(worker_text.strip()) < 250 or force_visual
+
+                    if is_short_or_visual or settings.vision_enabled:
+                        logger.info("Generating visual screenshot tiles for %s...", url)
+                        screenshot_bytes = page.screenshot(full_page=True, type="jpeg", quality=90)
+                        
+                        # Generate 1568px high screenshot tiles
+                        for idx, tile_bytes, w, h in self.iter_image_tiles(screenshot_bytes, tile_height=self.tile_height):
+                            if idx >= 5:
+                                break
+                            tile_filename = f"{slug}_{timestamp}_tile_{idx:02d}.jpg"
+                            tile_filepath = self.attachments_path / tile_filename
+                            with open(tile_filepath, "wb") as f:
+                                f.write(tile_bytes)
+                            worker_tiles.append(VisualTile(path=tile_filepath, index=idx, width=w, height=h))
+
+                    browser.close()
+                    return worker_title, worker_text, worker_tiles, worker_failed, worker_reason
+
+            except Exception as e:
+                logger.error("Visual capture failed for %s: %s", url, e)
+                return worker_title, worker_text, worker_tiles, True, str(e)
+
+        with ThreadPoolExecutor(max_workers=1) as executor:
+            future = executor.submit(_playwright_worker)
+            page_title, text_content, visual_tiles, is_failed, failure_reason = future.result()
 
         # If we captured visual tiles, short text does NOT count as a failed scrape!
         if not is_failed:
@@ -437,13 +452,153 @@ class ScraperEngine:
         return self.scrape_social_playwright(url, source_type="web", **kwargs)
 
     @measure_performance
+    def scrape_youtube(self, url: str, **kwargs: Any) -> ScrapedContent:
+        """
+        Extract rich YouTube / Podcast metadata and complete transcript/subtitles.
+        Supports full speech-to-text transcript across English, Ukrainian, Russian, and all languages.
+        """
+        match = re.search(r"(?:v=|\/|youtu\.be\/|embed\/|shorts\/)([a-zA-Z0-9_-]{11})", url)
+        if not match:
+            return self.scrape_trafilatura(url, **kwargs)
+
+        video_id = match.group(1)
+        video_url = f"https://www.youtube.com/watch?v={video_id}"
+        title = "YouTube Video / Podcast"
+        author = "YouTube Channel"
+        description = ""
+        transcript_text = ""
+        is_failed = False
+        failure_reason = None
+
+        # 1. Fetch oEmbed Metadata (Title, Author/Channel)
+        try:
+            oembed_url = f"https://www.youtube.com/oembed?url={video_url}&format=json"
+            with httpx.Client(timeout=15.0) as client:
+                resp = client.get(oembed_url)
+                if resp.status_code == 200:
+                    meta = resp.json()
+                    title = meta.get("title", title)
+                    author = meta.get("author_name", author)
+        except Exception as e:
+            logger.warning("YouTube oEmbed fetch notice for %s: %s", url, e)
+
+        # 2. Fetch Full Transcript (Subtitles)
+        try:
+            from youtube_transcript_api import YouTubeTranscriptApi
+            api = YouTubeTranscriptApi()
+            transcript_data = None
+
+            # Try direct fetch with language preferences
+            try:
+                transcript_data = api.fetch(video_id, languages=["en", "uk", "ru", "de", "es", "fr"])
+            except Exception:
+                pass
+
+            # Fallback: List all available transcripts and take first or auto-generated
+            if not transcript_data:
+                try:
+                    t_list = api.list(video_id)
+                    for t in t_list:
+                        transcript_data = t.fetch()
+                        if transcript_data:
+                            break
+                except Exception:
+                    pass
+
+            if transcript_data:
+                # Format transcript snippets into readable text paragraphs
+                snippets = getattr(transcript_data, "snippets", transcript_data)
+                formatted_lines = []
+                for s in snippets:
+                    t_text = getattr(s, "text", "") if hasattr(s, "text") else (s.get("text", "") if isinstance(s, dict) else str(s))
+                    if t_text.strip():
+                        formatted_lines.append(t_text.strip())
+                raw_transcript = " ".join(formatted_lines)
+                # Clean speaker sound markers ([snorts], [music]), stutters, and promo noise
+                transcript_text = clean_promo_noise(clean_transcript_text(raw_transcript))
+                logger.info("Successfully extracted & cleaned YouTube transcript (%d chars) for %s", len(transcript_text), url)
+
+        except Exception as e:
+            logger.warning("YouTube transcript extraction warning for %s: %s", url, e)
+
+        # 3. Assemble Rich Content Payload
+        content_parts = [
+            f"# Video Title: {title}",
+            f"# Channel / Creator: {author}",
+            f"# URL: {video_url}",
+        ]
+        if description:
+            content_parts.append(f"\n## Video Description:\n{description}")
+        if transcript_text:
+            content_parts.append(f"\n## Full Spoken Transcript:\n{transcript_text}")
+        else:
+            content_parts.append("\n[Note: No subtitle transcript track was found for this video. Analyzing title and metadata.]")
+            if len(title) < 15:
+                is_failed = True
+                failure_reason = "No transcript or description available for YouTube video"
+
+        full_content_text = "\n".join(content_parts)
+
+        return ScrapedContent(
+            url=url,
+            title=title,
+            text=full_content_text,
+            source_type="youtube",
+            failed_scrape=is_failed,
+            failure_reason=failure_reason,
+        )
+
+    @measure_performance
+    def scrape_arxiv(self, url: str, **kwargs: Any) -> ScrapedContent:
+        """
+        Extract ArXiv research paper metadata, abstract, and authors via ArXiv API.
+        """
+        match = re.search(r"arxiv\.org\/(?:abs|pdf)\/([0-9]+\.[0-9]+(?:v[0-9]+)?)", url)
+        if not match:
+            return self.scrape_trafilatura(url, **kwargs)
+
+        arxiv_id = match.group(1)
+        api_url = f"http://export.arxiv.org/api/query?id_list={arxiv_id}"
+        
+        try:
+            with httpx.Client(timeout=20.0) as client:
+                resp = client.get(api_url)
+                resp.raise_for_status()
+                xml_text = resp.text
+
+            # Parse XML fields using regex for speed without heavy dependencies
+            title_match = re.search(r"<entry>.*?<title>(.*?)</title>", xml_text, re.DOTALL)
+            summary_match = re.search(r"<entry>.*?<summary>(.*?)</summary>", xml_text, re.DOTALL)
+            authors = re.findall(r"<author>\s*<name>(.*?)</name>", xml_text)
+
+            title = title_match.group(1).strip().replace("\n", " ") if title_match else f"ArXiv Paper {arxiv_id}"
+            abstract = summary_match.group(1).strip() if summary_match else ""
+            authors_str = ", ".join(authors) if authors else "Unknown"
+
+            text = f"# Title: {title}\n# Authors: {authors_str}\n# ArXiv ID: {arxiv_id}\n\n## Abstract:\n{abstract}"
+            return ScrapedContent(
+                url=url,
+                title=title,
+                text=text,
+                source_type="arxiv",
+                failed_scrape=False,
+            )
+        except Exception as e:
+            logger.warning("ArXiv API query error for %s: %s. Falling back to web scraper.", url, e)
+            return self.scrape_trafilatura(url, **kwargs)
+
+    @measure_performance
     def scrape(self, url: str, force_visual: bool = False, **kwargs: Any) -> ScrapedContent:
         """
-        Main entrypoint: routes URL to appropriate scraper with visual tile support.
+        Main entrypoint: routes URL to specialized scraper (YouTube, ArXiv, GitHub, Social, Web).
         """
         domain = urlparse(url).netloc.lower()
 
-        if "x.com" in domain or "twitter.com" in domain:
+        if "youtube.com" in domain or "youtu.be" in domain:
+            return self.scrape_youtube(url, **kwargs)
+        elif "arxiv.org" in domain:
+            return self.scrape_arxiv(url, **kwargs)
+        elif "x.com" in domain or "twitter.com" in domain:
             return self.scrape_social_playwright(url, source_type="x", force_visual=force_visual, **kwargs)
         elif "linkedin.com" in domain:
             return self.scrape_social_playwright(url, source_type="linkedin", force_visual=force_visual, **kwargs)
